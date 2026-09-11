@@ -1,0 +1,4 @@
+module EchoMeshCoreFFI {
+    header "EchoMeshCoreFFI.h"
+    export *
+}

@@ -1,0 +1,24 @@
+# macOS System Files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Rust / Cargo
+**/target/
+**/*.rs.bk
+Cargo.lock.backup
+
+# Swift / Xcode / SPM
+**/.build/
+**/Packages/
+**/xcuserdata/
+**/DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.ipa
+*.dSYM.zip
+*.dSYM
+EchoMeshMac.app/
