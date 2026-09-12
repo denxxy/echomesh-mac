@@ -8,9 +8,11 @@ use zeroize::Zeroize;
 
 use crate::client::actor::{register_relay_route, run_relay_actor};
 use crate::client::session::{ClientSessionManager, OutboundPacket};
+use crate::e2ee::{decrypt_direct, encrypt_for_peer};
 use crate::identity::ClientIdentity;
 use crate::model::{Contact, ConversationSummary, MessageRecord};
 use crate::storage::StorageManager;
+use crate::transport::{decode_direct_packet, encode_direct_packet};
 use crate::{CoreEventsListener, DeliveryStatus, EchoMeshError, MessagePayload, NetworkState};
 
 #[derive(uniffi::Object)]
@@ -87,6 +89,52 @@ impl EchoMeshClient {
 
     pub fn send_packet(&self, recipient: Vec<u8>, data: Vec<u8>) -> Result<(), EchoMeshError> {
         self.session_mgr.send_packet(recipient, data)
+    }
+
+    /// Produces one opaque, authenticated E2EE packet for a LAN/BLE bearer.
+    /// Native transport adapters never receive identity private-key material.
+    pub fn build_direct_packet(
+        &self,
+        recipient: Vec<u8>,
+        data: Vec<u8>,
+    ) -> Result<Vec<u8>, EchoMeshError> {
+        let recipient: [u8; 32] = recipient
+            .as_slice()
+            .try_into()
+            .map_err(|_| EchoMeshError::InvalidKeyLength {
+                expected: 32,
+                actual: recipient.len() as u32,
+            })?;
+        let envelope = encrypt_for_peer(&self.identity, &recipient, &data)?;
+        encode_direct_packet(&envelope)
+    }
+
+    /// Accepts one complete EMD1 direct packet from LAN/BLE, verifies the
+    /// signed sender identity, decrypts it, persists it and emits normal core
+    /// callbacks exactly like relay delivery.
+    pub fn receive_direct_packet(&self, packet: Vec<u8>) -> Result<(), EchoMeshError> {
+        let envelope = decode_direct_packet(&packet)?;
+        let decrypted = decrypt_direct(&self.identity, envelope)?;
+        let text = String::from_utf8(decrypted.plaintext.clone())
+            .unwrap_or_else(|_| "[binary encrypted message]".to_string());
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let message = MessageRecord {
+            id: format!("direct_{}_{}", now, rand::random::<u16>()),
+            conversation_peer_id: decrypted.sender_peer_id.to_vec(),
+            sender_peer_id: decrypted.sender_peer_id.to_vec(),
+            text,
+            timestamp: now,
+            is_outgoing: false,
+            status: 1,
+        };
+        self.storage.save_message(&message)?;
+        self.listener.on_message_received(message);
+        self.listener
+            .on_packet_received(decrypted.sender_peer_id.to_vec(), decrypted.plaintext);
+        Ok(())
     }
 
     pub fn connect(
