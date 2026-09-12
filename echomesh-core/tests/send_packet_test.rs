@@ -104,7 +104,7 @@ fn test_send_packet_and_echo_flow() {
         fn on_packet_received(&self, sender: Vec<u8>, data: Vec<u8>) { self.0.on_packet_received(sender, data); }
     }
     let client = EchoMeshClient::new(temp_dir.to_str().unwrap().to_string(), Box::new(ListenerBridge(mock_listener.clone()))).unwrap();
-    client.connect(server_addr.to_string(), server_pub, None).unwrap();
+    client.connect(server_addr.to_string(), server_pub, Some("test-relay-token".to_string())).unwrap();
     assert_eq!(client.current_state(), NetworkState::ConnectedRealityRelay);
     client.send_packet(ECHO_SERVICE_PEER_ID.to_vec(), b"TEST_PAYLOAD".to_vec()).unwrap();
     std::thread::sleep(Duration::from_millis(300));
