@@ -6,9 +6,11 @@ import os.log
 public final class BLETransportService: NSObject {
     public static let shared = BLETransportService()
 
-    private static let serviceUUID = CBUUID(string: "7A7B0001-4C45-4D45-5348-4543484F4D45")
-    private static let identityUUID = CBUUID(string: "7A7B0002-4C45-4D45-5348-4543484F4D45")
-    private static let inboundUUID = CBUUID(string: "7A7B0003-4C45-4D45-5348-4543484F4D45")
+    // These UUIDs are part of the EchoMesh cross-platform BLE wire contract.
+    // Keep them byte-for-byte aligned with echomesh-core::transport::ble_native.
+    private static let serviceUUID = CBUUID(string: "5E4D0001-7A11-4EF0-9F84-4543484F4D53")
+    private static let identityUUID = CBUUID(string: "5E4D0002-7A11-4EF0-9F84-4543484F4D53")
+    private static let inboundUUID = CBUUID(string: "5E4D0003-7A11-4EF0-9F84-4543484F4D53")
     private static let magic = Data([0x45, 0x4D, 0x42, 0x31])
     private static let headerSize = 12
     private static let maxPacket = 1_400
