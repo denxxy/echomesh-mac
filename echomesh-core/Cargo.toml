@@ -15,6 +15,10 @@ path = "src/bin/uniffi-bindgen.rs"
 name = "test-connect"
 path = "src/bin/test-connect.rs"
 
+[features]
+default = ["native-ble"]
+native-ble = ["dep:btleplug", "dep:ble-peripheral-rust"]
+
 [dependencies]
 uniffi = { version = "0.29", features = ["cli", "tokio"] }
 tokio = { version = "1", features = ["full"] }
@@ -40,3 +44,7 @@ curve25519-dalek = "4"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 chacha20poly1305 = "0.10"
 zeroize = "1"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+btleplug = { version = "0.13", optional = true }
+ble-peripheral-rust = { version = "0.2", optional = true }
