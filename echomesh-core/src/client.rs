@@ -1,4 +1,5 @@
 pub mod actor;
+pub mod direct_actor;
 pub mod session;
 
 pub use crate::api::EchoMeshClient;
