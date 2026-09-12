@@ -209,7 +209,7 @@ final class CoreBridgeServiceTests: XCTestCase {
 
     @MainActor
     func testEchoPeerIdLength() {
-        XCTAssertEqual(ChatViewModel.echoPeerId.count, 31)
-        XCTAssertEqual(String(decoding: ChatViewModel.echoPeerId, as: UTF8.self), "ECHOMESH_ECHO_SERVICE_NODE_2026")
+        XCTAssertEqual(ChatViewModel.echoPeerId.count, 32)
+        XCTAssertEqual(ChatViewModel.echoPeerId, [UInt8](repeating: 0xEE, count: 32))
     }
 }

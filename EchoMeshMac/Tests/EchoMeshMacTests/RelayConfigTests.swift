@@ -199,6 +199,7 @@ final class RelayConfigTests: XCTestCase {
         XCTAssertEqual(initialNode.host, "77.81.5.109")
         XCTAssertEqual(initialNode.port, 8443)
         XCTAssertEqual(initialNode.publicKeyBase64, "oZvg53goRI3fNUZz5VwK6XzFI9KIkduWu6gYZsms1gY=")
+        XCTAssertEqual(initialNode.secretTokenHex, "6563686f6d6573685f7365637265745f6d6573685f746f6b656e5f32303236")
         XCTAssertTrue(initialNode.isDefault)
         XCTAssertEqual(manager.activeEndpoint.id, initialNode.id)
     }

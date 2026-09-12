@@ -65,6 +65,13 @@ fn test_send_packet_and_echo_flow() {
 
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+            // Read Pseudo-TLS ClientHello
+            let mut tls_header = [0u8; 5];
+            stream.read_exact(&mut tls_header).await.unwrap();
+            let tls_body_len = u16::from_be_bytes([tls_header[3], tls_header[4]]) as usize;
+            let mut tls_body = vec![0u8; tls_body_len];
+            stream.read_exact(&mut tls_body).await.unwrap();
+
             // Read msg1
             let msg1_len = stream.read_u16().await.unwrap() as usize;
             let mut msg1 = vec![0u8; msg1_len];

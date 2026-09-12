@@ -160,7 +160,7 @@ public struct ChatView: View {
                     // [Ping]
                     Button(action: {
                         if isConnected {
-                            chatVM.sendMessage(text: "PING")
+                            chatVM.sendMessage(text: "Ping")
                         }
                     }) {
                         HStack(spacing: 4) {
@@ -177,18 +177,18 @@ public struct ChatView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!isConnected)
-                    .help("Отправить PING")
+                    .help("Отправить Ping")
 
-                    // [Noise_NK Payload]
+                    // [Noise Payload]
                     Button(action: {
                         if isConnected {
-                            chatVM.sendMessage(text: "Test handshake payload verification")
+                            chatVM.sendMessage(text: "Noise Payload")
                         }
                     }) {
                         HStack(spacing: 4) {
                             Image(systemName: "lock.shield.fill")
                                 .font(.system(size: 10))
-                            Text("Noise_NK Payload")
+                            Text("Noise Payload")
                                 .font(.system(size: 11, weight: .medium))
                         }
                         .padding(.horizontal, 10)
@@ -199,9 +199,9 @@ public struct ChatView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!isConnected)
-                    .help("Отправить 'Test handshake payload verification'")
+                    .help("Отправить Noise Payload")
 
-                    // [1420b Frame Check]
+                    // [1420b Frame Test]
                     Button(action: {
                         if isConnected {
                             let test1300 = String(repeating: "ECHO_1420_PAD_", count: 92) + String(repeating: "X", count: 12)
@@ -211,7 +211,7 @@ public struct ChatView: View {
                         HStack(spacing: 4) {
                             Image(systemName: "doc.plaintext.fill")
                                 .font(.system(size: 10))
-                            Text("1420b Frame Check")
+                            Text("1420b Frame Test")
                                 .font(.system(size: 11, weight: .medium))
                         }
                         .padding(.horizontal, 10)
@@ -222,7 +222,7 @@ public struct ChatView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!isConnected)
-                    .help("Генерирует тестовую строку длиной 1300 символов для проверки паддинга до 1420 байт")
+                    .help("Отправить тестовую строку длиной 1300 байт для проверки 1420b Wire Frame")
 
                     Spacer()
                 }

@@ -35,6 +35,9 @@ pub const TLS_AES_128_GCM_SHA256: u16 = 0x1301;
 pub const TLS_AES_256_GCM_SHA384: u16 = 0x1302;
 pub const TLS_CHACHA20_POLY1305_SHA256: u16 = 0x1303;
 
+/// Default authorization secret token for Reality/Pseudo-TLS camouflage.
+pub const DEFAULT_SECRET_TOKEN: &[u8] = b"echomesh_secret_mesh_token_2026";
+
 /// Builder for generating authentic TLS 1.3 ClientHello messages (Pseudo-TLS Handshake)
 /// with embedded secret tokens to bypass DPI inspection.
 pub struct PseudoTlsBuilder {
@@ -47,8 +50,12 @@ pub struct PseudoTlsBuilder {
 impl PseudoTlsBuilder {
     /// Creates a new builder with the given secret token and SNI disguise host (e.g. "cloudflare.com").
     pub fn new(secret_token: impl Into<Vec<u8>>, sni_host: impl Into<String>) -> Self {
+        let mut token = secret_token.into();
+        if token.is_empty() {
+            token = DEFAULT_SECRET_TOKEN.to_vec();
+        }
         Self {
-            secret_token: secret_token.into(),
+            secret_token: token,
             sni_host: sni_host.into(),
             token_in_sni: false,
             cipher_suites: vec![
@@ -68,10 +75,15 @@ impl PseudoTlsBuilder {
     /// Builds the complete binary TLS 1.3 ClientHello record ready for transmission over TCP.
     pub fn build(&self) -> Vec<u8> {
         let mut random = [0x5au8; 32];
-        // Embed token in random if token_in_sni is false or token length <= 32
-        if !self.token_in_sni && !self.secret_token.is_empty() {
-            let copy_len = self.secret_token.len().min(32);
-            random[..copy_len].copy_from_slice(&self.secret_token[..copy_len]);
+        let token = if self.secret_token.is_empty() {
+            DEFAULT_SECRET_TOKEN
+        } else {
+            &self.secret_token[..]
+        };
+        // Embed token in random if token_in_sni is false
+        if !self.token_in_sni {
+            let copy_len = token.len().min(32);
+            random[..copy_len].copy_from_slice(&token[..copy_len]);
         }
 
         let sni_string = if self.token_in_sni {

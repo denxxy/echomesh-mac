@@ -367,6 +367,7 @@ dependencies = [
  "base64",
  "bs58",
  "bytes",
+ "echomesh-relay",
  "ed25519-dalek",
  "hex",
  "rand",
@@ -377,6 +378,19 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uniffi",
+]
+
+[[package]]
+name = "echomesh-relay"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "snow",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

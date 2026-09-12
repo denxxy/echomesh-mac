@@ -36,7 +36,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
 public final class ChatViewModel {
     public static let shared = ChatViewModel()
 
-    public static let echoPeerId: [UInt8] = Array("ECHOMESH_ECHO_SERVICE_NODE_2026".utf8.prefix(32))
+    public static let echoPeerId: [UInt8] = [UInt8](repeating: 0xEE, count: 32)
 
     public var messages: [ChatMessage] = []
     public var inputText: String = ""

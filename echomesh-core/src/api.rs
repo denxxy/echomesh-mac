@@ -148,26 +148,24 @@ impl EchoMeshClient {
                 }
             };
 
-            let secret_bytes: Option<Vec<u8>> = match secret_token_hex.as_deref() {
+            let token: Vec<u8> = match secret_token_hex.as_deref() {
                 Some(s) if !s.trim().is_empty() => {
-                    Some(hex::decode(s.trim()).unwrap_or_else(|_| s.trim().as_bytes().to_vec()))
+                    hex::decode(s.trim()).unwrap_or_else(|_| s.trim().as_bytes().to_vec())
                 }
-                _ => None,
+                _ => crate::transport::DEFAULT_SECRET_TOKEN.to_vec(),
             };
 
-            if let Some(token) = secret_bytes {
-                debug!(target = %clean_addr, "TCP stream connected; sending Pseudo-TLS ClientHello");
-                use tokio::io::AsyncWriteExt;
-                let tls_builder = crate::transport::PseudoTlsBuilder::new(token, "cloudflare.com");
-                let client_hello = tls_builder.build();
+            debug!(target = %clean_addr, "TCP stream connected; sending Pseudo-TLS ClientHello");
+            use tokio::io::AsyncWriteExt;
+            let tls_builder = crate::transport::PseudoTlsBuilder::new(token, "cloudflare.com");
+            let client_hello = tls_builder.build();
 
-                tcp_stream.write_all(&client_hello).await.map_err(|e| {
-                    EchoMeshError::ConnectionError(format!("Failed sending ClientHello: {}", e))
-                })?;
-                tcp_stream.flush().await.map_err(|e| {
-                    EchoMeshError::ConnectionError(format!("Failed flushing ClientHello: {}", e))
-                })?;
-            }
+            tcp_stream.write_all(&client_hello).await.map_err(|e| {
+                EchoMeshError::ConnectionError(format!("Failed sending ClientHello: {}", e))
+            })?;
+            tcp_stream.flush().await.map_err(|e| {
+                EchoMeshError::ConnectionError(format!("Failed flushing ClientHello: {}", e))
+            })?;
 
             debug!(target = %clean_addr, "Performing Noise NK handshake");
 
@@ -251,8 +249,11 @@ impl EchoMeshClient {
                             }
                         } => {},
                         _ = async {
-                            if let Some(mut rx) = shutdown_rx_out {
-                                let _ = rx.recv().await;
+                            match shutdown_rx_out {
+                                Some(mut rx) => {
+                                    let _ = rx.recv().await;
+                                }
+                                None => std::future::pending::<()>().await,
                             }
                         } => {}
                     }
@@ -309,8 +310,11 @@ impl EchoMeshClient {
                             }
                         } => {},
                         _ = async {
-                            if let Some(mut rx) = shutdown_rx_in {
-                                let _ = rx.recv().await;
+                            match shutdown_rx_in {
+                                Some(mut rx) => {
+                                    let _ = rx.recv().await;
+                                }
+                                None => std::future::pending::<()>().await,
                             }
                         } => {}
                     }

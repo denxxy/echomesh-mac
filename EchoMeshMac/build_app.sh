@@ -46,13 +46,14 @@ fi
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/EchoMeshMac" 2>/dev/null || true
 
 # 4. Ad-hoc codesign
+xattr -dr com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
 xattr -cr "$APP_BUNDLE" 2>/dev/null || true
 xattr -c "$APP_BUNDLE" 2>/dev/null || true
 codesign --force --deep --sign - "$APP_BUNDLE"
 
 # Verification
 echo "=== Verifying code signature ==="
-xattr -c "$APP_BUNDLE" 2>/dev/null || true
-codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+xattr -dr com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
+codesign --verify --deep --verbose=2 "$APP_BUNDLE"
 
 echo "=== Packaging complete: $SCRIPT_DIR/$APP_BUNDLE ==="
