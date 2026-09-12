@@ -26,3 +26,12 @@ jobs:
         run: cargo check --all-targets
       - name: Unit and interoperability tests
         run: cargo test --all-targets
+
+  mac-app:
+    name: macos-application-shell
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build core framework and macOS application
+        run: ./build.sh
