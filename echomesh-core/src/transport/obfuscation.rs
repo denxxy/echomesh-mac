@@ -1,4 +1,5 @@
 use bytes::{BufMut, BytesMut};
+use rand::RngCore;
 
 /// TLS Content Type for Handshake records.
 pub const TLS_HANDSHAKE_CONTENT_TYPE: u8 = 0x16;
@@ -74,16 +75,23 @@ impl PseudoTlsBuilder {
 
     /// Builds the complete binary TLS 1.3 ClientHello record ready for transmission over TCP.
     pub fn build(&self) -> Vec<u8> {
-        let mut random = [0x5au8; 32];
-        let token = if self.secret_token.is_empty() {
+        let mut random = [0u8; 32];
+        let secret_token = if self.secret_token.is_empty() {
             DEFAULT_SECRET_TOKEN
         } else {
             &self.secret_token[..]
         };
+
         // Embed token in random if token_in_sni is false
         if !self.token_in_sni {
-            let copy_len = token.len().min(32);
-            random[..copy_len].copy_from_slice(&token[..copy_len]);
+            let copy_len = secret_token.len().min(32);
+            random[..copy_len].copy_from_slice(&secret_token[..copy_len]);
+            // Оставшиеся байты (если токен короче 32 байт) заполняются CSPRNG
+            if copy_len < 32 {
+                rand::thread_rng().fill_bytes(&mut random[copy_len..]);
+            }
+        } else {
+            rand::thread_rng().fill_bytes(&mut random);
         }
 
         let sni_string = if self.token_in_sni {
@@ -205,5 +213,18 @@ mod tests {
         // random begins at offset 5 + 4 + 2 = 11.
         let random_slice = &bytes[11..11 + 32];
         assert_eq!(&random_slice[..32], &token[..32]);
+    }
+
+    #[test]
+    fn test_pseudo_tls_builder_default_secret_token() {
+        let builder = PseudoTlsBuilder::new(Vec::<u8>::new(), "cloudflare.com");
+        let bytes = builder.build();
+
+        assert!(bytes.len() > 40);
+        assert_eq!(bytes[0], TLS_HANDSHAKE_CONTENT_TYPE);
+
+        let random_slice = &bytes[11..11 + 32];
+        let copy_len = DEFAULT_SECRET_TOKEN.len().min(32);
+        assert_eq!(&random_slice[..copy_len], &DEFAULT_SECRET_TOKEN[..copy_len]);
     }
 }
