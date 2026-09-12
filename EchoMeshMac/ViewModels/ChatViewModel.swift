@@ -2,52 +2,27 @@ import Foundation
 import SwiftUI
 import Observation
 
-public enum MessageDeliveryStatus: Equatable, Sendable {
-    case sending
-    case sent
-    case echoed(rttMs: Int)
-    case failed(String)
-}
-
-public struct ChatMessage: Identifiable, Equatable, Sendable {
-    public let id: UUID
-    public let text: String
-    public let timestamp: Date
-    public let isOutgoing: Bool
-    public var status: MessageDeliveryStatus
-
-    public init(
-        id: UUID = UUID(),
-        text: String,
-        timestamp: Date = Date(),
-        isOutgoing: Bool,
-        status: MessageDeliveryStatus
-    ) {
-        self.id = id
-        self.text = text
-        self.timestamp = timestamp
-        self.isOutgoing = isOutgoing
-        self.status = status
-    }
-}
-
 @Observable
 @MainActor
 public final class ChatViewModel {
     public static let shared = ChatViewModel()
 
+    public static let echoPeerIdHex = String(repeating: "ee", count: 32)
     public static let echoPeerId: [UInt8] = [UInt8](repeating: 0xEE, count: 32)
 
-    public var messages: [ChatMessage] = []
+    public var currentPeerIdHex: String = echoPeerIdHex
+    public var currentTitle: String = "Echo Relay Node"
+    public var messages: [MessageRecord] = []
     public var inputText: String = ""
     public var isSending: Bool = false
+    public var rttMsMap: [String: Int] = [:]
 
     private let bridge: CoreBridgeService
     private let notifications: NotificationManager
     private var eventTask: Task<Void, Never>?
 
-    // Track pending outgoing messages to calculate RTT
-    private var pendingSends: [UUID: (text: String, startTime: ContinuousClock.Instant)] = [:]
+    // Track pending sends for RTT calculation
+    private var pendingSendTimes: [String: ContinuousClock.Instant] = [:]
 
     public init(
         bridge: CoreBridgeService = .shared,
@@ -56,6 +31,23 @@ public final class ChatViewModel {
         self.bridge = bridge
         self.notifications = notifications
         startEventListener()
+        loadMessages(for: currentPeerIdHex, title: currentTitle)
+    }
+
+    public func loadMessages(for peerIdHex: String, title: String? = nil) {
+        self.currentPeerIdHex = peerIdHex
+        if let title = title {
+            self.currentTitle = title
+        }
+
+        Task {
+            do {
+                let records = try await bridge.getMessages(peerIdHex: peerIdHex, limit: 100)
+                self.messages = records
+            } catch {
+                print("[ChatViewModel] Failed to load messages: \(error)")
+            }
+        }
     }
 
     public func startEventListener() {
@@ -66,13 +58,21 @@ public final class ChatViewModel {
             for await event in stream {
                 guard !Task.isCancelled else { break }
                 switch event {
-                case .packetReceived(let sender, let data):
-                    self.handlePacketReceived(sender: sender, data: data)
-                case .messageReceived(let message):
-                    let text = message.content
-                    let data = [UInt8](text.utf8)
-                    self.handlePacketReceived(sender: [UInt8](message.sender.utf8), data: data)
-                case .stateChanged, .messageStatusUpdated:
+                case .messageReceived(let record):
+                    self.handleIncomingRecord(record)
+
+                case .messageStatusUpdated(let messageId, let status):
+                    self.handleStatusUpdated(messageId: messageId, status: status)
+
+                case .packetReceived(let sender, _):
+                    // Fallback for packet events
+                    let senderHex = Data(sender).hexString
+                    if self.currentPeerIdHex.lowercased().hasPrefix(senderHex.lowercased()) ||
+                       senderHex.lowercased().hasPrefix(self.currentPeerIdHex.lowercased()) {
+                        // Handled via messageReceived from core
+                    }
+
+                case .stateChanged:
                     break
                 }
             }
@@ -87,89 +87,117 @@ public final class ChatViewModel {
             inputText = ""
         }
 
-        let messageId = UUID()
-        let outgoing = ChatMessage(
-            id: messageId,
+        let tempId = "msg_\(UInt64(Date().timeIntervalSince1970 * 1000))"
+        let peerData = Data(hexString: currentPeerIdHex) ?? Data(repeating: 0xEE, count: 32)
+        let optimisticRecord = MessageRecord(
+            id: tempId,
+            conversationPeerId: peerData,
+            senderPeerId: Data(repeating: 0, count: 32),
             text: textToSend,
-            timestamp: Date(),
+            timestamp: UInt64(Date().timeIntervalSince1970 * 1000),
             isOutgoing: true,
-            status: .sending
+            status: 0 // Sending
         )
-        messages.append(outgoing)
+        messages.append(optimisticRecord)
 
         let startTime = ContinuousClock.now
-        pendingSends[messageId] = (text: textToSend, startTime: startTime)
+        pendingSendTimes[tempId] = startTime
         isSending = true
 
+        let targetPeerHex = currentPeerIdHex
         Task {
             do {
-                let payload = Data(textToSend.utf8)
-                try await bridge.sendMessage(payload: payload, recipient: Self.echoPeerId)
+                let sentRecord = try await bridge.sendChatMessage(
+                    recipientPeerIdHex: targetPeerHex,
+                    text: textToSend
+                )
 
-                // Update status to sent upon successful transmission
-                if let idx = messages.firstIndex(where: { $0.id == messageId }) {
-                    if case .sending = messages[idx].status {
-                        messages[idx].status = .sent
-                    }
+                // Update optimistic record with confirmed record from core
+                if let idx = messages.firstIndex(where: { $0.id == tempId }) {
+                    messages[idx] = sentRecord
+                    pendingSendTimes[sentRecord.id] = startTime
+                    pendingSendTimes.removeValue(forKey: tempId)
                 }
             } catch {
-                if let idx = messages.firstIndex(where: { $0.id == messageId }) {
-                    messages[idx].status = .failed(error.localizedDescription)
+                if let idx = messages.firstIndex(where: { $0.id == tempId }) {
+                    messages[idx].status = 2 // Failed
                 }
-                pendingSends.removeValue(forKey: messageId)
+                pendingSendTimes.removeValue(forKey: tempId)
             }
             self.isSending = false
         }
     }
 
-    private func handlePacketReceived(sender: [UInt8], data: [UInt8]) {
-        let receivedText = String(decoding: data, as: UTF8.self)
+    private func handleIncomingRecord(_ record: MessageRecord) {
+        let convHex = record.conversationPeerIdHex.lowercased()
+        let currentHex = currentPeerIdHex.lowercased()
 
-        // Find pending send matching text or earliest sent/sending message
-        var matchedId: UUID? = nil
-        var rttMs = 38
+        // Match either full 32 bytes or 16-byte session prefix
+        let isCurrentConv = convHex == currentHex ||
+            (convHex.count >= 32 && currentHex.count >= 32 && convHex.prefix(32) == currentHex.prefix(32))
 
-        // Match by exact text first
-        if let (id, pending) = pendingSends.first(where: { $0.value.text == receivedText }) {
-            matchedId = id
-            let delta = ContinuousClock.now - pending.startTime
-            rttMs = max(1, Int(delta / .milliseconds(1)))
-            pendingSends.removeValue(forKey: id)
-        } else if let (id, pending) = pendingSends.first {
-            // FIFO fallback
-            matchedId = id
-            let delta = ContinuousClock.now - pending.startTime
-            rttMs = max(1, Int(delta / .milliseconds(1)))
-            pendingSends.removeValue(forKey: id)
-        }
+        if isCurrentConv {
+            // Check if already in messages
+            if !messages.contains(where: { $0.id == record.id }) {
+                messages.append(record)
 
-        if let id = matchedId, let idx = messages.firstIndex(where: { $0.id == id }) {
-            messages[idx].status = .echoed(rttMs: rttMs)
-        } else {
-            // Find any outgoing message in sent or sending state
-            if let idx = messages.lastIndex(where: { $0.isOutgoing && ($0.status == .sent || $0.status == .sending) }) {
-                messages[idx].status = .echoed(rttMs: rttMs)
+                // Calculate RTT if this was an echo response to a pending send
+                if let (pendingId, startTime) = pendingSendTimes.first {
+                    let delta = ContinuousClock.now - startTime
+                    let ms = max(1, Int(delta / .milliseconds(1)))
+                    rttMsMap[record.id] = ms
+                    rttMsMap[pendingId] = ms
+                    pendingSendTimes.removeValue(forKey: pendingId)
+
+                    // Update outgoing message status to 1 (Delivered / Echoed)
+                    if let outIdx = messages.firstIndex(where: { $0.id == pendingId }) {
+                        messages[outIdx].status = 1
+                    }
+                }
             }
         }
 
-        // Add incoming echo message from relay
-        let echoMessage = ChatMessage(
-            text: "Echo: \"\(receivedText)\"",
-            timestamp: Date(),
-            isOutgoing: false,
-            status: .echoed(rttMs: rttMs)
-        )
-        messages.append(echoMessage)
+        if !record.isOutgoing {
+            notifications.showIncomingMessageNotification(
+                from: record.isEchoSender ? "Echo Relay Node" : currentTitle,
+                content: record.text,
+                chatId: record.conversationPeerIdHex
+            )
+        }
+    }
 
-        notifications.showIncomingMessageNotification(
-            from: "Echo Node",
-            content: receivedText,
-            chatId: "echo_relay"
-        )
+    private func handleStatusUpdated(messageId: String, status: DeliveryStatus) {
+        if let idx = messages.firstIndex(where: { $0.id == messageId }) {
+            switch status {
+            case .sent: messages[idx].status = 1
+            case .delivered, .relayed: messages[idx].status = 1
+            case .failed: messages[idx].status = 2
+            }
+        }
     }
 
     public func clearMessages() {
         messages.removeAll()
-        pendingSends.removeAll()
+        pendingSendTimes.removeAll()
+        rttMsMap.removeAll()
+    }
+}
+
+// Helper init for Data from Hex string
+private extension Data {
+    init?(hexString: String) {
+        let clean = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "0x"))
+        var data = Data()
+        var temp = ""
+        for char in clean {
+            temp.append(char)
+            if temp.count == 2 {
+                guard let byte = UInt8(temp, radix: 16) else { return nil }
+                data.append(byte)
+                temp = ""
+            }
+        }
+        self = data
     }
 }

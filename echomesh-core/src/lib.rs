@@ -1,14 +1,18 @@
 pub mod api;
 pub mod client;
 pub mod crypto;
+pub mod model;
 pub mod noise;
 pub mod protocol;
+pub mod storage;
 pub mod transport;
 
 pub use api::EchoMeshClient;
 pub use crypto::IdentityKeyPair;
+pub use model::{Contact, ConversationSummary, MessageRecord, PeerId};
 pub use noise::{client_noise_handshake, NoiseFramedStream, NoiseSession};
 pub use protocol::{Frame, FrameCodec, FRAME_SIZE, MAX_PAYLOAD_SIZE};
+pub use storage::StorageManager;
 pub use transport::obfuscation::PseudoTlsBuilder;
 
 uniffi::setup_scaffolding!();
@@ -69,7 +73,7 @@ pub struct MessagePayload {
 #[uniffi::export(callback_interface)]
 pub trait CoreEventsListener: Send + Sync {
     fn on_state_changed(&self, state: NetworkState);
-    fn on_message_received(&self, message: MessagePayload);
+    fn on_message_received(&self, message: MessageRecord);
     fn on_message_status_updated(&self, message_id: String, status: DeliveryStatus);
     fn on_packet_received(&self, sender: Vec<u8>, data: Vec<u8>);
 }

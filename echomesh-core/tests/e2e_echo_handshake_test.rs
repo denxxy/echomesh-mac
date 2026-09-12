@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 use echomesh_core::{
-    CoreEventsListener, DeliveryStatus, EchoMeshClient, MessagePayload, NetworkState,
+    CoreEventsListener, DeliveryStatus, EchoMeshClient, MessageRecord, NetworkState,
 };
 use echomesh_relay::server::{ListenerConfig, RelayListener};
 
@@ -26,7 +26,7 @@ impl TestEventListener {
 
 impl CoreEventsListener for TestEventListener {
     fn on_state_changed(&self, _state: NetworkState) {}
-    fn on_message_received(&self, _message: MessagePayload) {}
+    fn on_message_received(&self, _message: MessageRecord) {}
     fn on_message_status_updated(&self, _message_id: String, _status: DeliveryStatus) {}
     fn on_packet_received(&self, sender: Vec<u8>, data: Vec<u8>) {
         *self.received_sender.lock().unwrap() = sender;
@@ -75,7 +75,7 @@ fn test_e2e_client_connect_and_echo_packet() {
     struct Bridge(Arc<TestEventListener>);
     impl CoreEventsListener for Bridge {
         fn on_state_changed(&self, s: NetworkState) { self.0.on_state_changed(s); }
-        fn on_message_received(&self, m: MessagePayload) { self.0.on_message_received(m); }
+        fn on_message_received(&self, m: MessageRecord) { self.0.on_message_received(m); }
         fn on_message_status_updated(&self, id: String, st: DeliveryStatus) { self.0.on_message_status_updated(id, st); }
         fn on_packet_received(&self, sender: Vec<u8>, data: Vec<u8>) { self.0.on_packet_received(sender, data); }
     }
@@ -92,6 +92,14 @@ fn test_e2e_client_connect_and_echo_packet() {
         .expect("Client connect and handshake must succeed against RelayListener");
 
     assert_eq!(client.current_state(), NetworkState::ConnectedRealityRelay);
+
+    // Verify connection remains stable past 1s idle (prevents premature socket drop)
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(
+        client.current_state(),
+        NetworkState::ConnectedRealityRelay,
+        "Client must remain connected and not drop connection after 1.5s"
+    );
 
     // 3. Send packet to Echo Service ([0xEE; 32])
     let echo_recipient = vec![0xEEu8; 32];

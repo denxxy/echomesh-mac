@@ -1,6 +1,7 @@
 use std::sync::{Arc, RwLock};
 use crate::noise::NoiseSession;
 use crate::EchoMeshError;
+pub use crate::protocol::{ECHO_PEER_ID, ECHO_SERVICE_PEER_ID};
 
 #[derive(Debug, Clone)]
 pub struct OutboundPacket {
@@ -52,6 +53,14 @@ impl ClientSessionManager {
 
     pub fn is_transport(&self) -> bool {
         matches!(*self.state.read().unwrap(), SessionState::Transport { .. })
+    }
+
+    pub fn get_outbound_tx(&self) -> Option<tokio::sync::mpsc::Sender<OutboundPacket>> {
+        let state_guard = self.state.read().unwrap();
+        match &*state_guard {
+            SessionState::Transport { outbound_tx, .. } => Some(outbound_tx.clone()),
+            _ => None,
+        }
     }
 
     pub fn send_packet(&self, recipient: Vec<u8>, data: Vec<u8>) -> Result<(), EchoMeshError> {

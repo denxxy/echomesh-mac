@@ -40,6 +40,7 @@ public final class AppState {
     private let bridge: CoreBridgeService
     private let keychain: KeychainService
     private var eventTask: Task<Void, Never>?
+    private var connectionTask: Task<Void, Never>?
 
     public init(
         bridge: CoreBridgeService = .shared,
@@ -132,14 +133,13 @@ public final class AppState {
     public func connectToRelay(_ endpoint: RelayEndpoint) {
         configManager.setActive(id: endpoint.id)
 
-        Task { @MainActor in
-            self.networkState = .connecting
-            self.connectionState = .connecting
-            self.lastErrorMessage = nil
-            self.lastConnectionError = nil
-        }
+        self.networkState = .connecting
+        self.connectionState = .connecting
+        self.lastErrorMessage = nil
+        self.lastConnectionError = nil
 
-        Task {
+        connectionTask?.cancel()
+        connectionTask = Task {
             do {
                 try await bridge.connectToRelay(endpoint: endpoint)
                 let currentPing = await bridge.pingMs()
@@ -150,17 +150,18 @@ public final class AppState {
                     self.lastConnectionError = nil
                 }
             } catch {
+                if Task.isCancelled { return }
                 let desc = error.localizedDescription
+                print("[CoreBridge] Session terminated with error: \(desc)")
                 Task { @MainActor in
                     let newState: ConnectionUIState = .failed(desc)
                     self.networkState = .offline
                     self.connectionState = newState
-                    if case .failed(let reason) = newState {
-                        self.lastErrorMessage = reason
-                        print("[EchoMesh UI] Ошибка соединения: \(reason)")
-                    }
+                    self.lastErrorMessage = desc
                     self.lastConnectionError = desc
                     self.errorMessage = "Connection error: \(desc)"
+                    self.logService.log("[CoreBridge] Session terminated with error: \(desc)", level: .error)
+                    print("[EchoMesh UI] Ошибка соединения: \(desc)")
                 }
             }
         }
@@ -174,6 +175,8 @@ public final class AppState {
 
     /// Disconnects manually from the current relay.
     public func disconnect() {
+        connectionTask?.cancel()
+        connectionTask = nil
         Task {
             do {
                 try await bridge.disconnect()

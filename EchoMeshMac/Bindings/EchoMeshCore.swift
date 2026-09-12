@@ -406,6 +406,22 @@ private let UNIFFI_CALLBACK_UNEXPECTED_ERROR: Int32 = 2
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt8: FfiConverterPrimitive {
+    typealias FfiType = UInt8
+    typealias SwiftType = UInt8
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt8 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: UInt8, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
     typealias FfiType = UInt32
     typealias SwiftType = UInt32
@@ -431,6 +447,30 @@ fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
     }
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterBool : FfiConverter {
+    typealias FfiType = Int8
+    typealias SwiftType = Bool
+
+    public static func lift(_ value: Int8) throws -> Bool {
+        return value != 0
+    }
+
+    public static func lower(_ value: Bool) -> Int8 {
+        return value ? 1 : 0
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Bool {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Bool, into buf: inout [UInt8]) {
         writeInt(&buf, lower(value))
     }
 }
@@ -499,13 +539,23 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 public protocol EchoMeshClientProtocol: AnyObject, Sendable {
     
+    func addContact(peerIdHex: String, name: String) throws 
+    
     func connect(relayAddress: String, relayPublicKey: Data, secretTokenHex: String?) throws 
     
     func currentState()  -> NetworkState
     
     func disconnect() throws 
     
+    func getContacts() throws  -> [Contact]
+    
+    func getConversations() throws  -> [ConversationSummary]
+    
+    func getMessages(peerIdHex: String, limit: UInt32) throws  -> [MessageRecord]
+    
     func pingMs()  -> UInt32
+    
+    func sendChatMessage(recipientPeerIdHex: String, text: String) throws  -> MessageRecord
     
     func sendMessage(to: String, text: String) throws  -> MessagePayload
     
@@ -577,6 +627,14 @@ public convenience init(storagePath: String, listener: CoreEventsListener)throws
     
 
     
+open func addContact(peerIdHex: String, name: String)throws   {try rustCallWithError(FfiConverterTypeEchoMeshError_lift) {
+    uniffi_echomesh_core_fn_method_echomeshclient_add_contact(self.uniffiClonePointer(),
+        FfiConverterString.lower(peerIdHex),
+        FfiConverterString.lower(name),$0
+    )
+}
+}
+    
 open func connect(relayAddress: String, relayPublicKey: Data, secretTokenHex: String?)throws   {try rustCallWithError(FfiConverterTypeEchoMeshError_lift) {
     uniffi_echomesh_core_fn_method_echomeshclient_connect(self.uniffiClonePointer(),
         FfiConverterString.lower(relayAddress),
@@ -599,9 +657,41 @@ open func disconnect()throws   {try rustCallWithError(FfiConverterTypeEchoMeshEr
 }
 }
     
+open func getContacts()throws  -> [Contact]  {
+    return try  FfiConverterSequenceTypeContact.lift(try rustCallWithError(FfiConverterTypeEchoMeshError_lift) {
+    uniffi_echomesh_core_fn_method_echomeshclient_get_contacts(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+open func getConversations()throws  -> [ConversationSummary]  {
+    return try  FfiConverterSequenceTypeConversationSummary.lift(try rustCallWithError(FfiConverterTypeEchoMeshError_lift) {
+    uniffi_echomesh_core_fn_method_echomeshclient_get_conversations(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+open func getMessages(peerIdHex: String, limit: UInt32)throws  -> [MessageRecord]  {
+    return try  FfiConverterSequenceTypeMessageRecord.lift(try rustCallWithError(FfiConverterTypeEchoMeshError_lift) {
+    uniffi_echomesh_core_fn_method_echomeshclient_get_messages(self.uniffiClonePointer(),
+        FfiConverterString.lower(peerIdHex),
+        FfiConverterUInt32.lower(limit),$0
+    )
+})
+}
+    
 open func pingMs() -> UInt32  {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
     uniffi_echomesh_core_fn_method_echomeshclient_ping_ms(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+open func sendChatMessage(recipientPeerIdHex: String, text: String)throws  -> MessageRecord  {
+    return try  FfiConverterTypeMessageRecord_lift(try rustCallWithError(FfiConverterTypeEchoMeshError_lift) {
+    uniffi_echomesh_core_fn_method_echomeshclient_send_chat_message(self.uniffiClonePointer(),
+        FfiConverterString.lower(recipientPeerIdHex),
+        FfiConverterString.lower(text),$0
     )
 })
 }
@@ -690,6 +780,178 @@ public func FfiConverterTypeEchoMeshClient_lower(_ value: EchoMeshClient) -> Uns
 }
 
 
+
+
+public struct Contact {
+    public var peerId: Data
+    public var name: String
+    public var addedAt: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(peerId: Data, name: String, addedAt: UInt64) {
+        self.peerId = peerId
+        self.name = name
+        self.addedAt = addedAt
+    }
+}
+
+#if compiler(>=6)
+extension Contact: Sendable {}
+#endif
+
+
+extension Contact: Equatable, Hashable {
+    public static func ==(lhs: Contact, rhs: Contact) -> Bool {
+        if lhs.peerId != rhs.peerId {
+            return false
+        }
+        if lhs.name != rhs.name {
+            return false
+        }
+        if lhs.addedAt != rhs.addedAt {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(peerId)
+        hasher.combine(name)
+        hasher.combine(addedAt)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeContact: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Contact {
+        return
+            try Contact(
+                peerId: FfiConverterData.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                addedAt: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: Contact, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.peerId, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterUInt64.write(value.addedAt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeContact_lift(_ buf: RustBuffer) throws -> Contact {
+    return try FfiConverterTypeContact.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeContact_lower(_ value: Contact) -> RustBuffer {
+    return FfiConverterTypeContact.lower(value)
+}
+
+
+public struct ConversationSummary {
+    public var peerId: Data
+    public var title: String
+    public var lastMessage: String?
+    public var lastTimestamp: UInt64
+    public var unreadCount: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(peerId: Data, title: String, lastMessage: String?, lastTimestamp: UInt64, unreadCount: UInt32) {
+        self.peerId = peerId
+        self.title = title
+        self.lastMessage = lastMessage
+        self.lastTimestamp = lastTimestamp
+        self.unreadCount = unreadCount
+    }
+}
+
+#if compiler(>=6)
+extension ConversationSummary: Sendable {}
+#endif
+
+
+extension ConversationSummary: Equatable, Hashable {
+    public static func ==(lhs: ConversationSummary, rhs: ConversationSummary) -> Bool {
+        if lhs.peerId != rhs.peerId {
+            return false
+        }
+        if lhs.title != rhs.title {
+            return false
+        }
+        if lhs.lastMessage != rhs.lastMessage {
+            return false
+        }
+        if lhs.lastTimestamp != rhs.lastTimestamp {
+            return false
+        }
+        if lhs.unreadCount != rhs.unreadCount {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(peerId)
+        hasher.combine(title)
+        hasher.combine(lastMessage)
+        hasher.combine(lastTimestamp)
+        hasher.combine(unreadCount)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeConversationSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConversationSummary {
+        return
+            try ConversationSummary(
+                peerId: FfiConverterData.read(from: &buf), 
+                title: FfiConverterString.read(from: &buf), 
+                lastMessage: FfiConverterOptionString.read(from: &buf), 
+                lastTimestamp: FfiConverterUInt64.read(from: &buf), 
+                unreadCount: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ConversationSummary, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.peerId, into: &buf)
+        FfiConverterString.write(value.title, into: &buf)
+        FfiConverterOptionString.write(value.lastMessage, into: &buf)
+        FfiConverterUInt64.write(value.lastTimestamp, into: &buf)
+        FfiConverterUInt32.write(value.unreadCount, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConversationSummary_lift(_ buf: RustBuffer) throws -> ConversationSummary {
+    return try FfiConverterTypeConversationSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConversationSummary_lower(_ value: ConversationSummary) -> RustBuffer {
+    return FfiConverterTypeConversationSummary.lower(value)
+}
 
 
 public struct IdentityKeyPair {
@@ -877,6 +1139,116 @@ public func FfiConverterTypeMessagePayload_lift(_ buf: RustBuffer) throws -> Mes
 #endif
 public func FfiConverterTypeMessagePayload_lower(_ value: MessagePayload) -> RustBuffer {
     return FfiConverterTypeMessagePayload.lower(value)
+}
+
+
+public struct MessageRecord {
+    public var id: String
+    public var conversationPeerId: Data
+    public var senderPeerId: Data
+    public var text: String
+    public var timestamp: UInt64
+    public var isOutgoing: Bool
+    public var status: UInt8
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, conversationPeerId: Data, senderPeerId: Data, text: String, timestamp: UInt64, isOutgoing: Bool, status: UInt8) {
+        self.id = id
+        self.conversationPeerId = conversationPeerId
+        self.senderPeerId = senderPeerId
+        self.text = text
+        self.timestamp = timestamp
+        self.isOutgoing = isOutgoing
+        self.status = status
+    }
+}
+
+#if compiler(>=6)
+extension MessageRecord: Sendable {}
+#endif
+
+
+extension MessageRecord: Equatable, Hashable {
+    public static func ==(lhs: MessageRecord, rhs: MessageRecord) -> Bool {
+        if lhs.id != rhs.id {
+            return false
+        }
+        if lhs.conversationPeerId != rhs.conversationPeerId {
+            return false
+        }
+        if lhs.senderPeerId != rhs.senderPeerId {
+            return false
+        }
+        if lhs.text != rhs.text {
+            return false
+        }
+        if lhs.timestamp != rhs.timestamp {
+            return false
+        }
+        if lhs.isOutgoing != rhs.isOutgoing {
+            return false
+        }
+        if lhs.status != rhs.status {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(conversationPeerId)
+        hasher.combine(senderPeerId)
+        hasher.combine(text)
+        hasher.combine(timestamp)
+        hasher.combine(isOutgoing)
+        hasher.combine(status)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMessageRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MessageRecord {
+        return
+            try MessageRecord(
+                id: FfiConverterString.read(from: &buf), 
+                conversationPeerId: FfiConverterData.read(from: &buf), 
+                senderPeerId: FfiConverterData.read(from: &buf), 
+                text: FfiConverterString.read(from: &buf), 
+                timestamp: FfiConverterUInt64.read(from: &buf), 
+                isOutgoing: FfiConverterBool.read(from: &buf), 
+                status: FfiConverterUInt8.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MessageRecord, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterData.write(value.conversationPeerId, into: &buf)
+        FfiConverterData.write(value.senderPeerId, into: &buf)
+        FfiConverterString.write(value.text, into: &buf)
+        FfiConverterUInt64.write(value.timestamp, into: &buf)
+        FfiConverterBool.write(value.isOutgoing, into: &buf)
+        FfiConverterUInt8.write(value.status, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMessageRecord_lift(_ buf: RustBuffer) throws -> MessageRecord {
+    return try FfiConverterTypeMessageRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMessageRecord_lower(_ value: MessageRecord) -> RustBuffer {
+    return FfiConverterTypeMessageRecord.lower(value)
 }
 
 // Note that we don't yet support `indirect` for enums.
@@ -1198,7 +1570,7 @@ public protocol CoreEventsListener: AnyObject, Sendable {
     
     func onStateChanged(state: NetworkState) 
     
-    func onMessageReceived(message: MessagePayload) 
+    func onMessageReceived(message: MessageRecord) 
     
     func onMessageStatusUpdated(messageId: String, status: DeliveryStatus) 
     
@@ -1252,7 +1624,7 @@ fileprivate struct UniffiCallbackInterfaceCoreEventsListener {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onMessageReceived(
-                     message: try FfiConverterTypeMessagePayload_lift(message)
+                     message: try FfiConverterTypeMessageRecord_lift(message)
                 )
             }
 
@@ -1412,6 +1784,81 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
         }
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeContact: FfiConverterRustBuffer {
+    typealias SwiftType = [Contact]
+
+    public static func write(_ value: [Contact], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeContact.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Contact] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Contact]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeContact.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeConversationSummary: FfiConverterRustBuffer {
+    typealias SwiftType = [ConversationSummary]
+
+    public static func write(_ value: [ConversationSummary], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeConversationSummary.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ConversationSummary] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ConversationSummary]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeConversationSummary.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMessageRecord: FfiConverterRustBuffer {
+    typealias SwiftType = [MessageRecord]
+
+    public static func write(_ value: [MessageRecord], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMessageRecord.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MessageRecord] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MessageRecord]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMessageRecord.read(from: &buf))
+        }
+        return seq
+    }
+}
 public func derivePublicKey(privateKey: Data)throws  -> IdentityKeyPair  {
     return try  FfiConverterTypeIdentityKeyPair_lift(try rustCallWithError(FfiConverterTypeEchoMeshError_lift) {
     uniffi_echomesh_core_fn_func_derive_public_key(
@@ -1447,6 +1894,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_echomesh_core_checksum_func_generate_identity_keypair() != 29642) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_echomesh_core_checksum_method_echomeshclient_add_contact() != 48969) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_echomesh_core_checksum_method_echomeshclient_connect() != 40480) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1456,7 +1906,19 @@ private let initializationResult: InitializationResult = {
     if (uniffi_echomesh_core_checksum_method_echomeshclient_disconnect() != 57636) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_echomesh_core_checksum_method_echomeshclient_get_contacts() != 11426) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_echomesh_core_checksum_method_echomeshclient_get_conversations() != 47464) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_echomesh_core_checksum_method_echomeshclient_get_messages() != 4464) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_echomesh_core_checksum_method_echomeshclient_ping_ms() != 19271) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_echomesh_core_checksum_method_echomeshclient_send_chat_message() != 41624) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_echomesh_core_checksum_method_echomeshclient_send_message() != 46583) {
@@ -1477,7 +1939,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_echomesh_core_checksum_method_coreeventslistener_on_state_changed() != 27739) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_echomesh_core_checksum_method_coreeventslistener_on_message_received() != 10685) {
+    if (uniffi_echomesh_core_checksum_method_coreeventslistener_on_message_received() != 12372) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_echomesh_core_checksum_method_coreeventslistener_on_message_status_updated() != 8847) {

@@ -35,6 +35,7 @@ let package = Package(
             sources: [
                 "App",
                 "Bindings",
+                "Models",
                 "Services",
                 "ViewModels",
                 "Views"

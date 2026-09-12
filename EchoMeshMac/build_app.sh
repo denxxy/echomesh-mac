@@ -15,7 +15,11 @@ echo "=== Building EchoMeshMac (release) ==="
 swift build -c release
 
 echo "=== Packaging EchoMeshMac.app ==="
-CONTENTS_DIR="$APP_BUNDLE/Contents"
+TMP_DIR="$(mktemp -d /tmp/echomesh_build.XXXXXX)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+TMP_APP="$TMP_DIR/$APP_BUNDLE"
+CONTENTS_DIR="$TMP_APP/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
@@ -45,15 +49,16 @@ fi
 # 5. rpath for UniFFI / Rust libraries
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/EchoMeshMac" 2>/dev/null || true
 
-# 4. Ad-hoc codesign
-xattr -dr com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
-xattr -cr "$APP_BUNDLE" 2>/dev/null || true
-xattr -c "$APP_BUNDLE" 2>/dev/null || true
-codesign --force --deep --sign - "$APP_BUNDLE"
+# 4. Ad-hoc codesign in clean temp environment
+xattr -cr "$TMP_APP" 2>/dev/null || true
+codesign --force --deep --sign - "$TMP_APP"
+
+# Copy signed bundle to target destination
+rm -rf "$APP_BUNDLE"
+ditto "$TMP_APP" "$APP_BUNDLE"
 
 # Verification
 echo "=== Verifying code signature ==="
-xattr -dr com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
 codesign --verify --deep --verbose=2 "$APP_BUNDLE"
 
 echo "=== Packaging complete: $SCRIPT_DIR/$APP_BUNDLE ==="

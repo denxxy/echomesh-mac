@@ -3,18 +3,22 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::client::session::{ClientSessionManager, OutboundPacket};
+use crate::model::{Contact, ConversationSummary, MessageRecord};
+use crate::storage::StorageManager;
 use crate::{CoreEventsListener, DeliveryStatus, EchoMeshError, MessagePayload, NetworkState};
 use tracing::{debug, error};
 
 #[derive(uniffi::Object)]
 pub struct EchoMeshClient {
     storage_path: String,
+    storage: Arc<StorageManager>,
     listener: Arc<dyn CoreEventsListener>,
     state: Arc<RwLock<NetworkState>>,
     ping_ms: AtomicU32,
     runtime: Arc<tokio::runtime::Runtime>,
     shutdown_sender: Mutex<Option<tokio::sync::broadcast::Sender<()>>>,
     session_mgr: Arc<ClientSessionManager>,
+    outbound_tx: Arc<RwLock<Option<tokio::sync::mpsc::Sender<OutboundPacket>>>>,
 }
 
 #[uniffi::export]
@@ -26,6 +30,9 @@ impl EchoMeshClient {
     ) -> Result<Arc<Self>, EchoMeshError> {
         let _ = std::fs::create_dir_all(&storage_path);
 
+        let db_path = std::path::Path::new(&storage_path).join("echomesh.db");
+        let storage = Arc::new(StorageManager::new(&db_path)?);
+
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -36,12 +43,14 @@ impl EchoMeshClient {
 
         let client = Arc::new(Self {
             storage_path,
+            storage,
             listener: Arc::from(listener),
             state: Arc::new(RwLock::new(NetworkState::Offline)),
             ping_ms: AtomicU32::new(0),
             runtime: Arc::new(rt),
             shutdown_sender: Mutex::new(Some(tx)),
             session_mgr: Arc::new(ClientSessionManager::new()),
+            outbound_tx: Arc::new(RwLock::new(None)),
         });
 
         Ok(client)
@@ -60,7 +69,15 @@ impl EchoMeshClient {
     }
 
     pub fn send_packet(&self, recipient: Vec<u8>, data: Vec<u8>) -> Result<(), EchoMeshError> {
-        self.session_mgr.send_packet(recipient, data)
+        let guard = self.outbound_tx.read().unwrap();
+        if let Some(ref tx) = *guard {
+            let packet = OutboundPacket { recipient, data };
+            tx.try_send(packet)
+                .map_err(|e| EchoMeshError::ConnectionError(format!("Outbound queue full or closed: {}", e)))?;
+            Ok(())
+        } else {
+            self.session_mgr.send_packet(recipient, data)
+        }
     }
 
     pub fn connect(
@@ -191,6 +208,7 @@ impl EchoMeshClient {
 
                 let (mut read_half, mut write_half) = tcp_stream.into_split();
                 let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel::<OutboundPacket>(256);
+                *self.outbound_tx.write().unwrap() = Some(outbound_tx.clone());
                 let session_arc = Arc::new(tokio::sync::Mutex::new(session));
 
                 self.session_mgr.set_transport(session_arc.clone(), outbound_tx);
@@ -202,49 +220,64 @@ impl EchoMeshClient {
                 let session_in = session_arc.clone();
                 let session_mgr = self.session_mgr.clone();
                 let client_state = self.state.clone();
+                let client_outbound_tx = self.outbound_tx.clone();
+                let storage_in = self.storage.clone();
 
                 // Outbound worker
                 rt.spawn(async move {
                     use tokio::io::AsyncWriteExt;
                     tokio::select! {
                         _ = async {
-                            while let Some(pkt) = outbound_rx.recv().await {
-                                let recipient = pkt.recipient;
-                                let data = pkt.data;
-                                tracing::info!("Core: sending 1420-byte masked frame to TCP stream for recipient {:?}", &recipient[..4.min(recipient.len())]);
+                            loop {
+                                let msg = outbound_rx.recv().await;
+                                match msg {
+                                    Some(pkt) => {
+                                        let recipient = pkt.recipient;
+                                        let data = pkt.data;
+                                        tracing::info!("Core: sending 1420-byte masked frame to TCP stream for recipient {:?}", &recipient[..4.min(recipient.len())]);
 
-                                let mut session_id = [0u8; 16];
-                                let copy_len = recipient.len().min(16);
-                                session_id[..copy_len].copy_from_slice(&recipient[..copy_len]);
-
-                                let nonce = [0u8; 8];
-                                let frame = match crate::protocol::Frame::new(session_id, nonce, bytes::Bytes::from(data)) {
-                                    Ok(f) => f,
-                                    Err(e) => {
-                                        tracing::error!("Failed constructing frame: {:?}", e);
-                                        continue;
-                                    }
-                                };
-
-                                let packet_res = {
-                                    let mut s = session_out.lock().await;
-                                    s.encrypt_frame(&frame)
-                                };
-
-                                match packet_res {
-                                    Ok(packet) => {
-                                        if let Err(e) = write_half.write_all(&packet).await {
-                                            tracing::error!("Failed writing frame to TCP stream: {:?}", e);
-                                            break;
+                                        let mut session_id = [0u8; 16];
+                                        if recipient.is_empty() {
+                                            session_id.copy_from_slice(&crate::protocol::ECHO_SERVICE_PEER_ID[..16]);
+                                        } else {
+                                            let copy_len = recipient.len().min(16);
+                                            session_id[..copy_len].copy_from_slice(&recipient[..copy_len]);
                                         }
-                                        if let Err(e) = write_half.flush().await {
-                                            tracing::error!("Failed flushing TCP stream: {:?}", e);
-                                            break;
+
+                                        let nonce = [0u8; 8];
+                                        let frame = match crate::protocol::Frame::new(session_id, nonce, bytes::Bytes::from(data)) {
+                                            Ok(f) => f,
+                                            Err(e) => {
+                                                tracing::error!("Failed constructing frame: {:?}", e);
+                                                continue;
+                                            }
+                                        };
+
+                                        let packet_res = {
+                                            let mut s = session_out.lock().await;
+                                            s.encrypt_frame(&frame)
+                                        };
+
+                                        match packet_res {
+                                            Ok(packet) => {
+                                                if let Err(e) = write_half.write_all(&packet).await {
+                                                    tracing::error!("Failed writing frame to TCP stream: {:?}", e);
+                                                    break;
+                                                }
+                                                if let Err(e) = write_half.flush().await {
+                                                    tracing::error!("Failed flushing TCP stream: {:?}", e);
+                                                    break;
+                                                }
+                                                tracing::info!("Sent 1420-byte frame to relay socket. Buffer flushed.");
+                                            }
+                                            Err(e) => {
+                                                tracing::error!("Failed encrypting frame: {:?}", e);
+                                            }
                                         }
-                                        tracing::info!("Sent 1420-byte frame to relay socket. Buffer flushed.");
                                     }
-                                    Err(e) => {
-                                        tracing::error!("Failed encrypting frame: {:?}", e);
+                                    None => {
+                                        tracing::warn!("Outbound channel closed, keeping connection alive for incoming frames...");
+                                        std::future::pending::<()>().await;
                                     }
                                 }
                             }
@@ -302,7 +335,53 @@ impl EchoMeshClient {
                                 match frame_res {
                                     Ok(frame) => {
                                         tracing::info!("Core: received 1420-byte frame with payload len {}", frame.payload.len());
-                                        listener.on_packet_received(frame.session_id.to_vec(), frame.payload.to_vec());
+                                        let sender_peer_id: [u8; 32] = if frame.session_id == crate::protocol::ECHO_SERVICE_PEER_ID[..16] {
+                                            crate::protocol::ECHO_SERVICE_PEER_ID
+                                        } else {
+                                            let mut matched = None;
+                                            if let Ok(contacts) = storage_in.get_contacts() {
+                                                for c in contacts {
+                                                    if c.peer_id.len() >= 16 && &c.peer_id[..16] == &frame.session_id[..] {
+                                                        if c.peer_id.len() == 32 {
+                                                            let mut arr = [0u8; 32];
+                                                            arr.copy_from_slice(&c.peer_id);
+                                                            matched = Some(arr);
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            matched.unwrap_or_else(|| {
+                                                let mut arr = [0u8; 32];
+                                                arr[..16].copy_from_slice(&frame.session_id);
+                                                arr
+                                            })
+                                        };
+
+                                        let text = String::from_utf8(frame.payload.to_vec())
+                                            .unwrap_or_else(|_| hex::encode(&frame.payload));
+
+                                        let now_millis = SystemTime::now()
+                                            .duration_since(UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_millis() as u64;
+
+                                        let incoming_msg = MessageRecord {
+                                            id: format!("msg_{}_{}", now_millis, rand::random::<u16>()),
+                                            conversation_peer_id: sender_peer_id.to_vec(),
+                                            sender_peer_id: sender_peer_id.to_vec(),
+                                            text,
+                                            timestamp: now_millis,
+                                            is_outgoing: false,
+                                            status: 1, // Sent/Received
+                                        };
+
+                                        if let Err(e) = storage_in.save_message(&incoming_msg) {
+                                            tracing::error!("Failed saving incoming message to SQLite: {:?}", e);
+                                        }
+
+                                        listener.on_message_received(incoming_msg);
+                                        listener.on_packet_received(sender_peer_id.to_vec(), frame.payload.to_vec());
                                     }
                                     Err(e) => {
                                         tracing::error!("Error decrypting frame: {:?}", e);
@@ -321,6 +400,7 @@ impl EchoMeshClient {
                     }
 
                     tracing::info!("Core: Inbound worker stopped, updating state to offline");
+                    *client_outbound_tx.write().unwrap() = None;
                     session_mgr.disconnect();
                     {
                         let mut state_guard = client_state.write().unwrap();
@@ -332,6 +412,7 @@ impl EchoMeshClient {
                 Ok(())
             }
             Err(err) => {
+                *self.outbound_tx.write().unwrap() = None;
                 self.session_mgr.disconnect();
                 {
                     let mut state_guard = self.state.write().unwrap();
@@ -344,6 +425,7 @@ impl EchoMeshClient {
     }
 
     pub fn disconnect(&self) -> Result<(), EchoMeshError> {
+        *self.outbound_tx.write().unwrap() = None;
         self.session_mgr.disconnect();
         {
             let mut state_guard = self.state.write().unwrap();
@@ -354,62 +436,132 @@ impl EchoMeshClient {
         Ok(())
     }
 
-    pub fn send_message(&self, to: String, text: String) -> Result<MessagePayload, EchoMeshError> {
+    pub fn add_contact(&self, peer_id_hex: String, name: String) -> Result<(), EchoMeshError> {
+        let peer_id = crate::model::parse_peer_id(&peer_id_hex)?;
+        let now_millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let contact = Contact {
+            peer_id: peer_id.to_vec(),
+            name,
+            added_at: now_millis,
+        };
+        self.storage.save_contact(&contact)
+    }
+
+    pub fn get_contacts(&self) -> Result<Vec<Contact>, EchoMeshError> {
+        self.storage.get_contacts()
+    }
+
+    pub fn get_conversations(&self) -> Result<Vec<ConversationSummary>, EchoMeshError> {
+        self.storage.get_conversations()
+    }
+
+    pub fn get_messages(&self, peer_id_hex: String, limit: u32) -> Result<Vec<MessageRecord>, EchoMeshError> {
+        let peer_id = crate::model::parse_peer_id(&peer_id_hex)?;
+        self.storage.get_messages(&peer_id, limit as usize, 0)
+    }
+
+    pub fn send_chat_message(
+        &self,
+        recipient_peer_id_hex: String,
+        text: String,
+    ) -> Result<MessageRecord, EchoMeshError> {
+        let recipient_bytes = crate::model::parse_peer_id(&recipient_peer_id_hex)?;
         let now_millis = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
 
         let msg_id = format!("msg_{}_{}", now_millis, rand::random::<u16>());
-        let payload = MessagePayload {
+        let mut msg = MessageRecord {
             id: msg_id.clone(),
-            sender: "me".to_string(),
-            recipient: to.clone(),
-            content: text.clone(),
+            conversation_peer_id: recipient_bytes.to_vec(),
+            sender_peer_id: vec![0u8; 32],
+            text: text.clone(),
             timestamp: now_millis,
-            status: DeliveryStatus::Sent,
+            is_outgoing: true,
+            status: 0, // Sending
         };
 
-        if self.session_mgr.is_transport() {
-            let mut recipient_bytes = [0u8; 32];
-            let to_bytes = to.as_bytes();
-            let copy_len = to_bytes.len().min(32);
-            recipient_bytes[..copy_len].copy_from_slice(&to_bytes[..copy_len]);
-            let _ = self.send_packet(recipient_bytes.to_vec(), text.clone().into_bytes());
+        // Save initial sending status
+        self.storage.save_message(&msg)?;
+
+        let is_transport = self.session_mgr.is_transport();
+        if is_transport {
+            let sent_res = self.send_packet(recipient_bytes.to_vec(), text.clone().into_bytes());
+            if sent_res.is_ok() {
+                msg.status = 1; // Sent
+                let _ = self.storage.update_message_status(&msg.id, 1);
+                self.listener.on_message_status_updated(msg.id.clone(), DeliveryStatus::Sent);
+            } else {
+                msg.status = 2; // Failed
+                let _ = self.storage.update_message_status(&msg.id, 2);
+                self.listener.on_message_status_updated(msg.id.clone(), DeliveryStatus::Failed);
+            }
+        } else {
+            // Mark as sent in offline/mock mode
+            msg.status = 1;
+            let _ = self.storage.update_message_status(&msg.id, 1);
+            self.listener.on_message_status_updated(msg.id.clone(), DeliveryStatus::Sent);
+
+            // If sending to Echo Node or in test mode, simulate echo response
+            if recipient_bytes == crate::protocol::ECHO_SERVICE_PEER_ID {
+                let storage = self.storage.clone();
+                let listener = self.listener.clone();
+                let text_clone = text.clone();
+                let rec_vec = recipient_bytes.to_vec();
+
+                self.runtime.spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                    let reply_now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+
+                    let reply_msg = MessageRecord {
+                        id: format!("echo_{}_{}", reply_now, rand::random::<u16>()),
+                        conversation_peer_id: rec_vec.clone(),
+                        sender_peer_id: rec_vec.clone(),
+                        text: format!("Echoed: {}", text_clone),
+                        timestamp: reply_now,
+                        is_outgoing: false,
+                        status: 1,
+                    };
+                    let _ = storage.save_message(&reply_msg);
+                    listener.on_message_received(reply_msg);
+                    listener.on_packet_received(rec_vec, format!("Echoed: {}", text_clone).into_bytes());
+                });
+            }
         }
 
-        let rt = Arc::clone(&self.runtime);
-        let listener = self.listener.clone();
-        let msg_id_clone = msg_id.clone();
-        let to_clone = to.clone();
-        let text_clone = text.clone();
+        Ok(msg)
+    }
 
-        rt.spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            listener.on_message_status_updated(msg_id_clone.clone(), DeliveryStatus::Relayed);
+    pub fn send_message(&self, to: String, text: String) -> Result<MessagePayload, EchoMeshError> {
+        let recipient_hex = if to.to_lowercase().contains("echo") {
+            hex::encode(crate::protocol::ECHO_SERVICE_PEER_ID)
+        } else if let Ok(_) = crate::model::parse_peer_id(&to) {
+            to.clone()
+        } else {
+            let mut arr = [0u8; 32];
+            let to_b = to.as_bytes();
+            let c_len = to_b.len().min(32);
+            arr[..c_len].copy_from_slice(&to_b[..c_len]);
+            hex::encode(arr)
+        };
 
-            tokio::time::sleep(Duration::from_millis(150)).await;
-            listener.on_message_status_updated(msg_id_clone.clone(), DeliveryStatus::Delivered);
-
-            if to_clone.to_lowercase().contains("echo") || to_clone.to_lowercase().contains("alice") {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                let reply_now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-
-                let reply_payload = MessagePayload {
-                    id: format!("reply_{}_{}", reply_now, rand::random::<u16>()),
-                    sender: to_clone,
-                    recipient: "me".to_string(),
-                    content: format!("Echoed: {}", text_clone),
-                    timestamp: reply_now,
-                    status: DeliveryStatus::Delivered,
-                };
-                listener.on_message_received(reply_payload);
-            }
-        });
-        Ok(payload)
+        let chat_record = self.send_chat_message(recipient_hex, text.clone())?;
+        Ok(MessagePayload {
+            id: chat_record.id,
+            sender: "me".to_string(),
+            recipient: to,
+            content: text,
+            timestamp: chat_record.timestamp,
+            status: DeliveryStatus::Sent,
+        })
     }
 
     pub fn shutdown(&self) -> Result<(), EchoMeshError> {

@@ -2,6 +2,7 @@ import SwiftUI
 
 public struct MainSplitView: View {
     @State private var appState = AppState.shared
+    @State private var chatListVM = ChatListViewModel.shared
     @State private var chatVM = ChatViewModel.shared
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
@@ -9,7 +10,7 @@ public struct MainSplitView: View {
 
     public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView(chatVM: chatVM, appState: appState)
+            SidebarView(chatListVM: chatListVM, chatVM: chatVM, appState: appState)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
         } detail: {
             ChatView(chatVM: chatVM, appState: appState)

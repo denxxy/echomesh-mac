@@ -5,7 +5,7 @@ use tokio::net::TcpListener;
 
 use echomesh_core::noise::{NOISE_PATTERN, NOISE_TAG_LEN};
 use echomesh_core::protocol::{Frame, FrameCodec, FRAME_SIZE};
-use echomesh_core::{CoreEventsListener, DeliveryStatus, EchoMeshClient, EchoMeshError, MessagePayload, NetworkState};
+use echomesh_core::{CoreEventsListener, DeliveryStatus, EchoMeshClient, EchoMeshError, MessageRecord, NetworkState};
 
 struct MockListener {
     packet_received: AtomicBool,
@@ -13,7 +13,7 @@ struct MockListener {
 
 impl CoreEventsListener for MockListener {
     fn on_state_changed(&self, _state: NetworkState) {}
-    fn on_message_received(&self, _message: MessagePayload) {}
+    fn on_message_received(&self, _message: MessageRecord) {}
     fn on_message_status_updated(&self, _message_id: String, _status: DeliveryStatus) {}
     fn on_packet_received(&self, _sender: Vec<u8>, data: Vec<u8>) {
         if data == b"TEST_PAYLOAD" {
@@ -137,7 +137,7 @@ fn test_send_packet_and_echo_flow() {
     struct ListenerBridge(Arc<MockListener>);
     impl CoreEventsListener for ListenerBridge {
         fn on_state_changed(&self, s: NetworkState) { self.0.on_state_changed(s); }
-        fn on_message_received(&self, m: MessagePayload) { self.0.on_message_received(m); }
+        fn on_message_received(&self, m: MessageRecord) { self.0.on_message_received(m); }
         fn on_message_status_updated(&self, id: String, st: DeliveryStatus) { self.0.on_message_status_updated(id, st); }
         fn on_packet_received(&self, sender: Vec<u8>, data: Vec<u8>) { self.0.on_packet_received(sender, data); }
     }

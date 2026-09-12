@@ -22,6 +22,10 @@ pub const MAX_PAYLOAD_SIZE: usize = FRAME_SIZE - HEADER_SIZE;
 pub type SessionId = [u8; SESSION_ID_SIZE];
 pub type Nonce = [u8; NONCE_SIZE];
 
+/// Static identifier of the internal echo loopback service (32 bytes of 0xEE).
+pub const ECHO_PEER_ID: [u8; 32] = [0xEE; 32];
+pub const ECHO_SERVICE_PEER_ID: [u8; 32] = ECHO_PEER_ID;
+
 #[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolError {
     #[error("frame is too short: expected {expected} bytes, got {actual}")]

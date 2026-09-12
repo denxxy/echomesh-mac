@@ -3,7 +3,7 @@ import XCTest
 
 final class MockEventListener: CoreEventsListener, @unchecked Sendable {
     var stateTransitions: [NetworkState] = []
-    var receivedMessages: [MessagePayload] = []
+    var receivedMessages: [MessageRecord] = []
     var statusUpdates: [(messageId: String, status: DeliveryStatus)] = []
     var receivedPackets: [(sender: Data, data: Data)] = []
 
@@ -15,7 +15,7 @@ final class MockEventListener: CoreEventsListener, @unchecked Sendable {
         stateTransitions.append(state)
     }
 
-    func onMessageReceived(message: MessagePayload) {
+    func onMessageReceived(message: MessageRecord) {
         lock.lock()
         defer { lock.unlock() }
         receivedMessages.append(message)
@@ -211,5 +211,68 @@ final class CoreBridgeServiceTests: XCTestCase {
     func testEchoPeerIdLength() {
         XCTAssertEqual(ChatViewModel.echoPeerId.count, 32)
         XCTAssertEqual(ChatViewModel.echoPeerId, [UInt8](repeating: 0xEE, count: 32))
+    }
+
+    func testContactAndConversationStorage() async throws {
+        let bridge = CoreBridgeService(storagePath: tempStorageDir.path)
+        try await bridge.start()
+
+        // 1. Check auto-seeded Echo Relay Node contact
+        let initialContacts = try await bridge.getContacts()
+        XCTAssertEqual(initialContacts.count, 1)
+        XCTAssertEqual(initialContacts[0].name, "Echo Relay Node")
+        XCTAssertEqual(initialContacts[0].peerId, Data(repeating: 0xEE, count: 32))
+
+        // 2. Add custom contact
+        let aliceKeyHex = String(repeating: "aa", count: 32)
+        try await bridge.addContact(peerIdHex: aliceKeyHex, name: "Alice")
+
+        let contacts = try await bridge.getContacts()
+        XCTAssertEqual(contacts.count, 2)
+        XCTAssertTrue(contacts.contains { $0.name == "Alice" })
+
+        // 3. Send message to Alice
+        let sent = try await bridge.sendChatMessage(recipientPeerIdHex: aliceKeyHex, text: "Hello Alice")
+        XCTAssertEqual(sent.text, "Hello Alice")
+        XCTAssertTrue(sent.isOutgoing)
+
+        // 4. Retrieve messages
+        let messages = try await bridge.getMessages(peerIdHex: aliceKeyHex, limit: 50)
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].text, "Hello Alice")
+
+        // 5. Retrieve conversations
+        let convs = try await bridge.getConversations()
+        let aliceConv = convs.first { $0.peerId == Data(repeating: 0xAA, count: 32) }
+        XCTAssertNotNil(aliceConv)
+        XCTAssertEqual(aliceConv?.lastMessage, "Hello Alice")
+
+        await bridge.shutdown()
+    }
+
+    func testKeyValidator() {
+        // Valid 64-char Hex
+        let hex64 = String(repeating: "ab", count: 32)
+        let res1 = KeyValidator.validate(hex64)
+        XCTAssertTrue(res1.isValid)
+        XCTAssertEqual(res1.hexString, hex64)
+
+        // Valid with 0x prefix
+        let res2 = KeyValidator.validate("0x" + hex64)
+        XCTAssertTrue(res2.isValid)
+        XCTAssertEqual(res2.hexString, hex64)
+
+        // Valid 32-byte Base64
+        let base64 = Data(repeating: 0x42, count: 32).base64EncodedString()
+        let res3 = KeyValidator.validate(base64)
+        XCTAssertTrue(res3.isValid)
+
+        // Invalid length
+        let res4 = KeyValidator.validate("1234abcd")
+        XCTAssertFalse(res4.isValid)
+
+        // Empty string
+        let res5 = KeyValidator.validate("")
+        XCTAssertFalse(res5.isValid)
     }
 }
