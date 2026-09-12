@@ -12,7 +12,7 @@ public struct MainSplitView: View {
             SidebarView(chatVM: chatVM, appState: appState)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
         } detail: {
-            ChatDetailView(chatVM: chatVM, appState: appState)
+            ChatView(chatVM: chatVM, appState: appState)
         }
         .frame(minWidth: 800, minHeight: 520)
         .toolbar {

@@ -272,12 +272,20 @@ typedef void (*UniffiCallbackInterfaceCoreEventsListenerMethod2)(uint64_t, RustB
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CORE_EVENTS_LISTENER_METHOD3
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CORE_EVENTS_LISTENER_METHOD3
+typedef void (*UniffiCallbackInterfaceCoreEventsListenerMethod3)(uint64_t, RustBuffer, RustBuffer, void* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_CORE_EVENTS_LISTENER
 #define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_CORE_EVENTS_LISTENER
 typedef struct UniffiVTableCallbackInterfaceCoreEventsListener {
     UniffiCallbackInterfaceCoreEventsListenerMethod0 _Nonnull onStateChanged;
     UniffiCallbackInterfaceCoreEventsListenerMethod1 _Nonnull onMessageReceived;
     UniffiCallbackInterfaceCoreEventsListenerMethod2 _Nonnull onMessageStatusUpdated;
+    UniffiCallbackInterfaceCoreEventsListenerMethod3 _Nonnull onPacketReceived;
     UniffiCallbackInterfaceFree _Nonnull uniffiFree;
 } UniffiVTableCallbackInterfaceCoreEventsListener;
 
@@ -320,6 +328,11 @@ uint32_t uniffi_echomesh_core_fn_method_echomeshclient_ping_ms(void*_Nonnull ptr
 #ifndef UNIFFI_FFIDEF_UNIFFI_ECHOMESH_CORE_FN_METHOD_ECHOMESHCLIENT_SEND_MESSAGE
 #define UNIFFI_FFIDEF_UNIFFI_ECHOMESH_CORE_FN_METHOD_ECHOMESHCLIENT_SEND_MESSAGE
 RustBuffer uniffi_echomesh_core_fn_method_echomeshclient_send_message(void*_Nonnull ptr, RustBuffer to, RustBuffer text, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ECHOMESH_CORE_FN_METHOD_ECHOMESHCLIENT_SEND_PACKET
+#define UNIFFI_FFIDEF_UNIFFI_ECHOMESH_CORE_FN_METHOD_ECHOMESHCLIENT_SEND_PACKET
+void uniffi_echomesh_core_fn_method_echomeshclient_send_packet(void*_Nonnull ptr, RustBuffer recipient, RustBuffer data, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ECHOMESH_CORE_FN_METHOD_ECHOMESHCLIENT_SHUTDOWN
@@ -670,6 +683,12 @@ uint16_t uniffi_echomesh_core_checksum_method_echomeshclient_send_message(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ECHOMESH_CORE_CHECKSUM_METHOD_ECHOMESHCLIENT_SEND_PACKET
+#define UNIFFI_FFIDEF_UNIFFI_ECHOMESH_CORE_CHECKSUM_METHOD_ECHOMESHCLIENT_SEND_PACKET
+uint16_t uniffi_echomesh_core_checksum_method_echomeshclient_send_packet(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ECHOMESH_CORE_CHECKSUM_METHOD_ECHOMESHCLIENT_SHUTDOWN
 #define UNIFFI_FFIDEF_UNIFFI_ECHOMESH_CORE_CHECKSUM_METHOD_ECHOMESHCLIENT_SHUTDOWN
 uint16_t uniffi_echomesh_core_checksum_method_echomeshclient_shutdown(void
@@ -703,6 +722,12 @@ uint16_t uniffi_echomesh_core_checksum_method_coreeventslistener_on_message_rece
 #ifndef UNIFFI_FFIDEF_UNIFFI_ECHOMESH_CORE_CHECKSUM_METHOD_COREEVENTSLISTENER_ON_MESSAGE_STATUS_UPDATED
 #define UNIFFI_FFIDEF_UNIFFI_ECHOMESH_CORE_CHECKSUM_METHOD_COREEVENTSLISTENER_ON_MESSAGE_STATUS_UPDATED
 uint16_t uniffi_echomesh_core_checksum_method_coreeventslistener_on_message_status_updated(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ECHOMESH_CORE_CHECKSUM_METHOD_COREEVENTSLISTENER_ON_PACKET_RECEIVED
+#define UNIFFI_FFIDEF_UNIFFI_ECHOMESH_CORE_CHECKSUM_METHOD_COREEVENTSLISTENER_ON_PACKET_RECEIVED
+uint16_t uniffi_echomesh_core_checksum_method_coreeventslistener_on_packet_received(void
     
 );
 #endif

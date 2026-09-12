@@ -3,7 +3,6 @@ import SwiftUI
 public struct SidebarView: View {
     @Bindable var chatVM: ChatViewModel
     @Bindable var appState: AppState
-    @State private var searchText: String = ""
     @State private var isErrorPopoverPresented: Bool = false
     @State private var isPulsingScale: Bool = false
 
@@ -12,85 +11,113 @@ public struct SidebarView: View {
         self.appState = appState
     }
 
-    public var filteredConversations: [ChatConversation] {
-        if searchText.isEmpty {
-            return chatVM.conversations
-        } else {
-            return chatVM.conversations.filter {
-                $0.name.localizedCaseInsensitiveContains(searchText) ||
-                $0.publicKeyBase58.localizedCaseInsensitiveContains(searchText)
-            }
-        }
+    private var isConnected: Bool {
+        appState.networkState == .connectedRealityRelay || appState.networkState == .connectedBleMeshFallback
     }
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Search Bar
-            HStack {
-                Image(systemName: "magnifyingglass")
+            // Single Pinned Echo Relay Chat Item
+            VStack(alignment: .leading, spacing: 6) {
+                Text("ПОДКЛЮЧЕННЫЙ ШЛЮЗ")
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundColor(.secondary)
-                TextField("Поиск узлов или ключей...", text: $searchText)
-                    .textFieldStyle(.plain)
-                if !searchText.isEmpty {
-                    Button(action: { searchText = "" }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(8)
-            .background(Color(NSColor.controlBackgroundColor).opacity(0.6))
-            .cornerRadius(8)
-            .padding([.horizontal, .top], 10)
-            .padding(.bottom, 6)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 14)
 
-            // Conversations List
-            List(selection: $chatVM.selectedConversationId) {
-                Section("Защищенные диалоги") {
-                    ForEach(filteredConversations) { conv in
-                        NavigationLink(value: conv.id) {
-                            ConversationRow(conversation: conv)
+                // The single pinned Echo Relay Chat row
+                HStack(spacing: 12) {
+                    // Avatar / Indicator
+                    ZStack(alignment: .bottomTrailing) {
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color.blue.opacity(0.8), Color.purple.opacity(0.8)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 40, height: 40)
+                            .overlay {
+                                Image(systemName: "antenna.radiowaves.left.and.right")
+                                    .font(.system(size: 17, weight: .semibold))
+                                    .foregroundColor(.white)
+                            }
+
+                        // Status dot with pulsing effect
+                        ZStack {
+                            if isConnected {
+                                Circle()
+                                    .fill(Color.green.opacity(isPulsingScale ? 0.35 : 0.0))
+                                    .frame(width: 18, height: 18)
+                                    .scaleEffect(isPulsingScale ? 1.4 : 0.8)
+                                    .animation(
+                                        .easeInOut(duration: 1.2).repeatForever(autoreverses: true),
+                                        value: isPulsingScale
+                                    )
+                            }
+
+                            Circle()
+                                .fill(isConnected ? Color.green : Color.red)
+                                .frame(width: 10, height: 10)
+                                .overlay(Circle().stroke(Color(NSColor.windowBackgroundColor), lineWidth: 2))
+                                .shadow(color: (isConnected ? Color.green : Color.red).opacity(0.5), radius: 2)
                         }
+                        .frame(width: 14, height: 14)
+                        .offset(x: 2, y: 2)
                     }
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Echo Relay Node")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.primary)
+
+                        Text("77.81.5.109:8443 • Noise_NK")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+
+                    Image(systemName: "shield.checkered")
+                        .font(.system(size: 13))
+                        .foregroundColor(isConnected ? .green : .secondary)
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.accentColor.opacity(0.12))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.accentColor.opacity(0.3), lineWidth: 1)
+                )
+                .padding(.horizontal, 10)
+                .padding(.top, 4)
             }
-            .listStyle(.sidebar)
+            .onAppear {
+                isPulsingScale = true
+            }
+
+            Spacer()
 
             Divider()
 
-            // Bottom Relay Status Bar
+            // Bottom Status Bar
             HStack(spacing: 8) {
-                // Live Status Indicator Dot
                 Button(action: {
                     if appState.networkState == .offline && appState.lastConnectionError != nil {
                         isErrorPopoverPresented.toggle()
                     }
                 }) {
-                    ZStack {
-                        if appState.networkState == .connectedRealityRelay {
-                            // Pulsing halo effect
-                            Circle()
-                                .fill(Color.green.opacity(isPulsingScale ? 0.3 : 0.0))
-                                .frame(width: 18, height: 18)
-                                .scaleEffect(isPulsingScale ? 1.4 : 0.8)
-                                .animation(
-                                    .easeInOut(duration: 1.2).repeatForever(autoreverses: true),
-                                    value: isPulsingScale
-                                )
-                        }
-
-                        Circle()
-                            .fill(appState.statusColor)
-                            .frame(width: 9, height: 9)
-                            .shadow(color: appState.statusColor.opacity(0.6), radius: 3)
-                    }
-                    .frame(width: 18, height: 18)
+                    Circle()
+                        .fill(isConnected ? Color.green : Color.red)
+                        .frame(width: 9, height: 9)
+                        .shadow(color: (isConnected ? Color.green : Color.red).opacity(0.6), radius: 3)
                 }
                 .buttonStyle(.plain)
-                .onAppear {
-                    isPulsingScale = true
-                }
                 .popover(isPresented: $isErrorPopoverPresented, arrowEdge: .top) {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
@@ -122,10 +149,10 @@ public struct SidebarView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(appState.currentEndpoint.name)
+                    Text(isConnected ? "Сессия активна" : "Офлайн")
                         .font(.system(size: 11, weight: .medium))
                         .lineLimit(1)
-                    Text(statusTextWithPing)
+                    Text(statusText)
                         .font(.system(size: 10))
                         .foregroundColor(appState.networkState == .offline && appState.lastConnectionError != nil ? .red : .secondary)
                         .lineLimit(1)
@@ -147,81 +174,20 @@ public struct SidebarView: View {
         }
     }
 
-    private var statusTextWithPing: String {
+    private var statusText: String {
         switch appState.networkState {
         case .connectedRealityRelay:
             let pingPart = appState.pingMs > 0 ? " • \(appState.pingMs) ms" : ""
-            return "Connected to \(appState.currentEndpoint.formattedAddress)\(pingPart)"
+            return "77.81.5.109:8443\(pingPart)"
         case .connectedBleMeshFallback:
-            return "Mesh Fallback Active"
+            return "Mesh Fallback"
         case .connecting:
-            return "Connecting to \(appState.currentEndpoint.formattedAddress)..."
+            return "Подключение к 77.81.5.109:8443..."
         case .offline:
             if appState.lastConnectionError != nil {
-                return "Connection Failed (кликните)"
+                return "Ошибка подключения"
             }
-            return "Offline"
-        }
-    }
-}
-
-struct ConversationRow: View {
-    let conversation: ChatConversation
-
-    var body: some View {
-        HStack(spacing: 10) {
-            // Avatar with Network Status Indicator
-            ZStack(alignment: .bottomTrailing) {
-                Circle()
-                    .fill(LinearGradient(
-                        colors: [Color.accentColor.opacity(0.8), Color.purple.opacity(0.8)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ))
-                    .frame(width: 38, height: 38)
-                    .overlay {
-                        Text(String(conversation.name.prefix(1)))
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundColor(.white)
-                    }
-
-                // Network indicator dot
-                Circle()
-                    .fill(statusIndicatorColor(for: conversation.status))
-                    .frame(width: 11, height: 11)
-                    .overlay(Circle().stroke(Color(NSColor.windowBackgroundColor), lineWidth: 2))
-            }
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
-                    Text(conversation.name)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
-                    Spacer()
-                    Text(conversation.lastTimestamp, style: .time)
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                }
-
-                Text(conversation.lastMessage)
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    private func statusIndicatorColor(for status: NetworkState) -> Color {
-        switch status {
-        case .connectedRealityRelay:
-            return .green
-        case .connectedBleMeshFallback:
-            return .orange
-        case .connecting:
-            return .yellow
-        case .offline:
-            return .red
+            return "Офлайн"
         }
     }
 }

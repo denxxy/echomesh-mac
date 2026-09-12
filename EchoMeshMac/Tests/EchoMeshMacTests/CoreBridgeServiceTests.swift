@@ -5,6 +5,7 @@ final class MockEventListener: CoreEventsListener, @unchecked Sendable {
     var stateTransitions: [NetworkState] = []
     var receivedMessages: [MessagePayload] = []
     var statusUpdates: [(messageId: String, status: DeliveryStatus)] = []
+    var receivedPackets: [(sender: Data, data: Data)] = []
 
     private let lock = NSLock()
 
@@ -24,6 +25,12 @@ final class MockEventListener: CoreEventsListener, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         statusUpdates.append((messageId, status))
+    }
+
+    func onPacketReceived(sender: Data, data: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        receivedPackets.append((sender, data))
     }
 }
 
@@ -171,5 +178,38 @@ final class CoreBridgeServiceTests: XCTestCase {
         XCTAssertNotNil(lastErr)
 
         await bridge.shutdown()
+    }
+
+    func testSendMessagePayloadNotReadyWhenOffline() async throws {
+        let bridge = CoreBridgeService(storagePath: tempStorageDir.path)
+
+        // Before start -> notInitialized
+        do {
+            try await bridge.sendMessage(payload: Data("PING".utf8), recipient: ChatViewModel.echoPeerId)
+            XCTFail("Should throw notInitialized error")
+        } catch CoreBridgeError.clientNotInitialized {
+            // Expected
+        } catch {
+            XCTFail("Expected CoreBridgeError.clientNotInitialized, got \(error)")
+        }
+
+        // After start, but offline -> notReady
+        try await bridge.start()
+        do {
+            try await bridge.sendMessage(payload: Data("PING".utf8), recipient: ChatViewModel.echoPeerId)
+            XCTFail("Should throw notReady error")
+        } catch CoreBridgeError.notReady {
+            // Expected
+        } catch {
+            XCTFail("Expected CoreBridgeError.notReady, got \(error)")
+        }
+
+        await bridge.shutdown()
+    }
+
+    @MainActor
+    func testEchoPeerIdLength() {
+        XCTAssertEqual(ChatViewModel.echoPeerId.count, 31)
+        XCTAssertEqual(String(decoding: ChatViewModel.echoPeerId, as: UTF8.self), "ECHOMESH_ECHO_SERVICE_NODE_2026")
     }
 }

@@ -11,6 +11,9 @@ public enum CoreBridgeError: LocalizedError, Equatable, Sendable {
     case handshakeTimeout(String)
     case handshakeUnexpectedEof(String)
     case noiseError(String)
+    case notReady
+
+    public static var notInitialized: CoreBridgeError { .clientNotInitialized }
 
     public var errorDescription: String? {
         switch self {
@@ -28,6 +31,8 @@ public enum CoreBridgeError: LocalizedError, Equatable, Sendable {
             return "Handshake Unexpected EOF: \(msg)"
         case .noiseError(let msg):
             return "Noise Handshake Error: \(msg)"
+        case .notReady:
+            return "EchoMesh Core Client is not in transport state"
         }
     }
 }
@@ -43,6 +48,7 @@ public enum CoreEngineEvent: Sendable {
     case stateChanged(NetworkState)
     case messageReceived(MessagePayload)
     case messageStatusUpdated(messageId: String, status: DeliveryStatus)
+    case packetReceived(sender: [UInt8], data: [UInt8])
 }
 
 /// Thread-safe event listener implementation conforming to UniFFI `CoreEventsListener`.
@@ -88,6 +94,17 @@ public final class ClientEventListener: CoreEventsListener, @unchecked Sendable 
         )
     }
 
+    public func onPacketReceived(sender: Data, data: Data) {
+        let senderBytes = [UInt8](sender)
+        let dataBytes = [UInt8](data)
+        eventContinuation.yield(.packetReceived(sender: senderBytes, data: dataBytes))
+        NotificationCenter.default.post(
+            name: .echoMeshPacketReceived,
+            object: nil,
+            userInfo: ["sender": senderBytes, "data": dataBytes]
+        )
+    }
+
     deinit {
         eventContinuation.finish()
     }
@@ -97,6 +114,7 @@ public extension Notification.Name {
     static let echoMeshStateChanged = Notification.Name("echoMeshStateChanged")
     static let echoMeshMessageReceived = Notification.Name("echoMeshMessageReceived")
     static let echoMeshMessageStatusUpdated = Notification.Name("echoMeshMessageStatusUpdated")
+    static let echoMeshPacketReceived = Notification.Name("echoMeshPacketReceived")
 }
 
 /// Swift Actor managing the lifecycle of the underlying Rust `EchoMeshClient` and Tokio runtime,
@@ -310,7 +328,42 @@ public actor CoreBridgeService {
             return .connectionFailed("Runtime error: \(msg)")
         case .StorageError(let msg):
             return .connectionFailed("Storage error: \(msg)")
+        case .NotReady:
+            return .notReady
         }
+    }
+
+    public var connectionState: ConnectionUIState {
+        switch currentConnectionState {
+        case .connectedRealityRelay, .connectedBleMeshFallback:
+            return .connected
+        case .connecting:
+            return .connecting
+        case .offline:
+            return .disconnected
+        }
+    }
+
+    /// Sends an encrypted frame via FFI in detached task, without blocking MainActor.
+    public func sendMessage(payload: Data, recipient: [UInt8]) async throws {
+        guard let client = self.clientInstance else {
+            systemLogger.error("[CoreBridge] sendMessage failed: clientInstance is nil")
+            throw CoreBridgeError.notInitialized
+        }
+        guard connectionState == .connected else {
+            systemLogger.error("[CoreBridge] sendMessage failed: not connected (state: \(String(describing: self.currentConnectionState)))")
+            throw CoreBridgeError.notReady
+        }
+        let byteCount = payload.count
+        let logMsg = "[CoreBridge] Sending \(byteCount) bytes to Echo Node"
+        print(logMsg)
+        systemLogger.info("\(logMsg, privacy: .public)")
+        Task { @MainActor in
+            NetworkLogService.shared.log(logMsg, level: .info)
+        }
+        try await Task.detached {
+            try client.sendPacket(recipient: recipient, data: [UInt8](payload))
+        }.value
     }
 
     /// Sends an encrypted message to the target recipient.
@@ -566,5 +619,11 @@ public actor CoreBridgeService {
                 }
             }
         }
+    }
+}
+
+extension EchoMeshClient {
+    public func sendPacket(recipient: [UInt8], data: [UInt8]) throws {
+        try self.sendPacket(recipient: Data(recipient), data: Data(data))
     }
 }

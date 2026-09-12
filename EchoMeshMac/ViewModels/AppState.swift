@@ -111,7 +111,7 @@ public final class AppState {
                         }
                     }
 
-                case .messageReceived, .messageStatusUpdated:
+                case .messageReceived, .messageStatusUpdated, .packetReceived:
                     break
                 }
             }

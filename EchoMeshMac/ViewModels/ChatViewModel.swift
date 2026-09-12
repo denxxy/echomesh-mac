@@ -2,31 +2,32 @@ import Foundation
 import SwiftUI
 import Observation
 
-public struct ChatConversation: Identifiable, Hashable, Sendable {
-    public let id: String
-    public var name: String
-    public var publicKeyBase58: String
-    public var status: NetworkState
-    public var lastMessage: String
-    public var lastTimestamp: Date
-    public var unreadCount: Int
+public enum MessageDeliveryStatus: Equatable, Sendable {
+    case sending
+    case sent
+    case echoed(rttMs: Int)
+    case failed(String)
+}
+
+public struct ChatMessage: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let text: String
+    public let timestamp: Date
+    public let isOutgoing: Bool
+    public var status: MessageDeliveryStatus
 
     public init(
-        id: String,
-        name: String,
-        publicKeyBase58: String,
-        status: NetworkState,
-        lastMessage: String,
-        lastTimestamp: Date = Date(),
-        unreadCount: Int = 0
+        id: UUID = UUID(),
+        text: String,
+        timestamp: Date = Date(),
+        isOutgoing: Bool,
+        status: MessageDeliveryStatus
     ) {
         self.id = id
-        self.name = name
-        self.publicKeyBase58 = publicKeyBase58
+        self.text = text
+        self.timestamp = timestamp
+        self.isOutgoing = isOutgoing
         self.status = status
-        self.lastMessage = lastMessage
-        self.lastTimestamp = lastTimestamp
-        self.unreadCount = unreadCount
     }
 }
 
@@ -35,35 +36,9 @@ public struct ChatConversation: Identifiable, Hashable, Sendable {
 public final class ChatViewModel {
     public static let shared = ChatViewModel()
 
-    public var conversations: [ChatConversation] = [
-        ChatConversation(
-            id: "peer_alice",
-            name: "Alice (Reality Node)",
-            publicKeyBase58: "7YtGfC3Lq9M2XvH1nP4sR8wD6eKbTaJ5",
-            status: .connectedRealityRelay,
-            lastMessage: "Relay tunnel active via Tokyo Reality endpoint",
-            lastTimestamp: Date().addingTimeInterval(-120)
-        ),
-        ChatConversation(
-            id: "peer_bob",
-            name: "Bob (Mesh Peer)",
-            publicKeyBase58: "4KjLmN9P2vW3rT5xY7zB1qC8sE0fGhJ4",
-            status: .connectedBleMeshFallback,
-            lastMessage: "BLE mesh routing hopped through 2 local nodes",
-            lastTimestamp: Date().addingTimeInterval(-900)
-        ),
-        ChatConversation(
-            id: "peer_charlie",
-            name: "Charlie (Offline)",
-            publicKeyBase58: "9XvW2rT5yZ1qB8sE0fGhJ4kLmN3p7YtG",
-            status: .offline,
-            lastMessage: "Last seen 2 hours ago",
-            lastTimestamp: Date().addingTimeInterval(-7200)
-        )
-    ]
+    public static let echoPeerId: [UInt8] = Array("ECHOMESH_ECHO_SERVICE_NODE_2026".utf8.prefix(32))
 
-    public var selectedConversationId: String? = "peer_alice"
-    public var messages: [String: [MessagePayload]] = [:]
+    public var messages: [ChatMessage] = []
     public var inputText: String = ""
     public var isSending: Bool = false
 
@@ -71,56 +46,16 @@ public final class ChatViewModel {
     private let notifications: NotificationManager
     private var eventTask: Task<Void, Never>?
 
+    // Track pending outgoing messages to calculate RTT
+    private var pendingSends: [UUID: (text: String, startTime: ContinuousClock.Instant)] = [:]
+
     public init(
         bridge: CoreBridgeService = .shared,
         notifications: NotificationManager = .shared
     ) {
         self.bridge = bridge
         self.notifications = notifications
-        seedInitialMessages()
         startEventListener()
-    }
-
-    public var selectedConversation: ChatConversation? {
-        conversations.first { $0.id == selectedConversationId }
-    }
-
-    public var currentMessages: [MessagePayload] {
-        guard let id = selectedConversationId else { return [] }
-        return messages[id] ?? []
-    }
-
-    private func seedInitialMessages() {
-        let now = Date().timeIntervalSince1970 * 1000
-        messages["peer_alice"] = [
-            MessagePayload(
-                id: "seed_1",
-                sender: "peer_alice",
-                recipient: "me",
-                content: "Zero-knowledge Reality handshake established.",
-                timestamp: UInt64(now - 60000),
-                status: .delivered
-            ),
-            MessagePayload(
-                id: "seed_2",
-                sender: "me",
-                recipient: "peer_alice",
-                content: "All wire traffic is padded to 1420-byte MTU frames.",
-                timestamp: UInt64(now - 30000),
-                status: .delivered
-            )
-        ]
-
-        messages["peer_bob"] = [
-            MessagePayload(
-                id: "seed_3",
-                sender: "peer_bob",
-                recipient: "me",
-                content: "Direct mesh fallback ping is ~48ms.",
-                timestamp: UInt64(now - 120000),
-                status: .delivered
-            )
-        ]
     }
 
     public func startEventListener() {
@@ -131,81 +66,110 @@ public final class ChatViewModel {
             for await event in stream {
                 guard !Task.isCancelled else { break }
                 switch event {
+                case .packetReceived(let sender, let data):
+                    self.handlePacketReceived(sender: sender, data: data)
                 case .messageReceived(let message):
-                    self.handleIncomingMessage(message)
-                case .messageStatusUpdated(let messageId, let status):
-                    self.handleStatusUpdated(messageId: messageId, status: status)
-                case .stateChanged:
+                    let text = message.content
+                    let data = [UInt8](text.utf8)
+                    self.handlePacketReceived(sender: [UInt8](message.sender.utf8), data: data)
+                case .stateChanged, .messageStatusUpdated:
                     break
                 }
             }
         }
     }
 
-    public func sendMessage() {
-        guard let conversationId = selectedConversationId, !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return
+    public func sendMessage(text customText: String? = nil) {
+        let textToSend = (customText ?? inputText).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !textToSend.isEmpty else { return }
+
+        if customText == nil {
+            inputText = ""
         }
 
-        let textToSend = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        inputText = ""
+        let messageId = UUID()
+        let outgoing = ChatMessage(
+            id: messageId,
+            text: textToSend,
+            timestamp: Date(),
+            isOutgoing: true,
+            status: .sending
+        )
+        messages.append(outgoing)
+
+        let startTime = ContinuousClock.now
+        pendingSends[messageId] = (text: textToSend, startTime: startTime)
         isSending = true
 
         Task {
             do {
-                let sentPayload = try await bridge.sendMessage(to: conversationId, text: textToSend)
-                appendMessage(sentPayload, to: conversationId)
-                updateLastMessage(textToSend, for: conversationId)
+                let payload = Data(textToSend.utf8)
+                try await bridge.sendMessage(payload: payload, recipient: Self.echoPeerId)
+
+                // Update status to sent upon successful transmission
+                if let idx = messages.firstIndex(where: { $0.id == messageId }) {
+                    if case .sending = messages[idx].status {
+                        messages[idx].status = .sent
+                    }
+                }
             } catch {
-                let localErrorPayload = MessagePayload(
-                    id: UUID().uuidString,
-                    sender: "me",
-                    recipient: conversationId,
-                    content: textToSend,
-                    timestamp: UInt64(Date().timeIntervalSince1970 * 1000),
-                    status: .failed
-                )
-                appendMessage(localErrorPayload, to: conversationId)
+                if let idx = messages.firstIndex(where: { $0.id == messageId }) {
+                    messages[idx].status = .failed(error.localizedDescription)
+                }
+                pendingSends.removeValue(forKey: messageId)
             }
             self.isSending = false
         }
     }
 
-    private func appendMessage(_ message: MessagePayload, to conversationId: String) {
-        if messages[conversationId] == nil {
-            messages[conversationId] = []
+    private func handlePacketReceived(sender: [UInt8], data: [UInt8]) {
+        let receivedText = String(decoding: data, as: UTF8.self)
+
+        // Find pending send matching text or earliest sent/sending message
+        var matchedId: UUID? = nil
+        var rttMs = 38
+
+        // Match by exact text first
+        if let (id, pending) = pendingSends.first(where: { $0.value.text == receivedText }) {
+            matchedId = id
+            let delta = ContinuousClock.now - pending.startTime
+            rttMs = max(1, Int(delta / .milliseconds(1)))
+            pendingSends.removeValue(forKey: id)
+        } else if let (id, pending) = pendingSends.first {
+            // FIFO fallback
+            matchedId = id
+            let delta = ContinuousClock.now - pending.startTime
+            rttMs = max(1, Int(delta / .milliseconds(1)))
+            pendingSends.removeValue(forKey: id)
         }
-        messages[conversationId]?.append(message)
-    }
 
-    private func updateLastMessage(_ text: String, for conversationId: String) {
-        if let idx = conversations.firstIndex(where: { $0.id == conversationId }) {
-            conversations[idx].lastMessage = text
-            conversations[idx].lastTimestamp = Date()
+        if let id = matchedId, let idx = messages.firstIndex(where: { $0.id == id }) {
+            messages[idx].status = .echoed(rttMs: rttMs)
+        } else {
+            // Find any outgoing message in sent or sending state
+            if let idx = messages.lastIndex(where: { $0.isOutgoing && ($0.status == .sent || $0.status == .sending) }) {
+                messages[idx].status = .echoed(rttMs: rttMs)
+            }
         }
-    }
 
-    private func handleIncomingMessage(_ message: MessagePayload) {
-        let conversationId = message.sender
-        appendMessage(message, to: conversationId)
-        updateLastMessage(message.content, for: conversationId)
+        // Add incoming echo message from relay
+        let echoMessage = ChatMessage(
+            text: "Echo: \"\(receivedText)\"",
+            timestamp: Date(),
+            isOutgoing: false,
+            status: .echoed(rttMs: rttMs)
+        )
+        messages.append(echoMessage)
 
-        let senderName = conversations.first { $0.id == conversationId }?.name ?? conversationId
         notifications.showIncomingMessageNotification(
-            from: senderName,
-            content: message.content,
-            chatId: conversationId
+            from: "Echo Node",
+            content: receivedText,
+            chatId: "echo_relay"
         )
     }
 
-    private func handleStatusUpdated(messageId: String, status: DeliveryStatus) {
-        for (convId, msgList) in messages {
-            if let idx = msgList.firstIndex(where: { $0.id == messageId }) {
-                var updated = msgList[idx]
-                updated.status = status
-                messages[convId]?[idx] = updated
-                break
-            }
-        }
+    public func clearMessages() {
+        messages.removeAll()
+        pendingSends.removeAll()
     }
 }

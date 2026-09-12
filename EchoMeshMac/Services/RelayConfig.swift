@@ -165,6 +165,7 @@ public final class RelayConfigManager: Sendable {
         host: "77.81.5.109",
         port: 8443,
         publicKeyBase64: "oZvg53goRI3fNUZz5VwK6XzFI9KIkduWu6gYZsms1gY=",
+        secretTokenHex: "651380e1cb3464e95878c6d6aebca5af3b0686895912f925365d1988a1d6a102",
         isDefault: true
     )
 
@@ -214,8 +215,13 @@ public final class RelayConfigManager: Sendable {
         self.endpoints = decoded
         // Ensure default relay has verified key if it was saved empty
         for i in self.endpoints.indices {
-            if self.endpoints[i].host == "77.81.5.109" && self.endpoints[i].publicKeyBase64.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                self.endpoints[i].publicKeyBase64 = "oZvg53goRI3fNUZz5VwK6XzFI9KIkduWu6gYZsms1gY="
+            if self.endpoints[i].host == "77.81.5.109" {
+                if self.endpoints[i].publicKeyBase64.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.endpoints[i].publicKeyBase64 = "oZvg53goRI3fNUZz5VwK6XzFI9KIkduWu6gYZsms1gY="
+                }
+                if self.endpoints[i].secretTokenHex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.endpoints[i].secretTokenHex = "651380e1cb3464e95878c6d6aebca5af3b0686895912f925365d1988a1d6a102"
+                }
             }
         }
         if let defaultNode = self.endpoints.first(where: { $0.isDefault }) {

@@ -509,6 +509,8 @@ public protocol EchoMeshClientProtocol: AnyObject, Sendable {
     
     func sendMessage(to: String, text: String) throws  -> MessagePayload
     
+    func sendPacket(recipient: Data, data: Data) throws 
+    
     func shutdown() throws 
     
     func storagePath()  -> String
@@ -611,6 +613,14 @@ open func sendMessage(to: String, text: String)throws  -> MessagePayload  {
         FfiConverterString.lower(text),$0
     )
 })
+}
+    
+open func sendPacket(recipient: Data, data: Data)throws   {try rustCallWithError(FfiConverterTypeEchoMeshError_lift) {
+    uniffi_echomesh_core_fn_method_echomeshclient_send_packet(self.uniffiClonePointer(),
+        FfiConverterData.lower(recipient),
+        FfiConverterData.lower(data),$0
+    )
+}
 }
     
 open func shutdown()throws   {try rustCallWithError(FfiConverterTypeEchoMeshError_lift) {
@@ -972,6 +982,7 @@ public enum EchoMeshError: Swift.Error {
     )
     case StorageError(String
     )
+    case NotReady
 }
 
 
@@ -1010,6 +1021,7 @@ public struct FfiConverterTypeEchoMeshError: FfiConverterRustBuffer {
         case 7: return .StorageError(
             try FfiConverterString.read(from: &buf)
             )
+        case 8: return .NotReady
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -1057,6 +1069,10 @@ public struct FfiConverterTypeEchoMeshError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(7))
             FfiConverterString.write(v1, into: &buf)
             
+        
+        case .NotReady:
+            writeInt(&buf, Int32(8))
+        
         }
     }
 }
@@ -1186,6 +1202,8 @@ public protocol CoreEventsListener: AnyObject, Sendable {
     
     func onMessageStatusUpdated(messageId: String, status: DeliveryStatus) 
     
+    func onPacketReceived(sender: Data, data: Data) 
+    
 }
 
 
@@ -1261,6 +1279,32 @@ fileprivate struct UniffiCallbackInterfaceCoreEventsListener {
                 return uniffiObj.onMessageStatusUpdated(
                      messageId: try FfiConverterString.lift(messageId),
                      status: try FfiConverterTypeDeliveryStatus_lift(status)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onPacketReceived: { (
+            uniffiHandle: UInt64,
+            sender: RustBuffer,
+            data: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceCoreEventsListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onPacketReceived(
+                     sender: try FfiConverterData.lift(sender),
+                     data: try FfiConverterData.lift(data)
                 )
             }
 
@@ -1418,6 +1462,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_echomesh_core_checksum_method_echomeshclient_send_message() != 46583) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_echomesh_core_checksum_method_echomeshclient_send_packet() != 16894) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_echomesh_core_checksum_method_echomeshclient_shutdown() != 4146) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1434,6 +1481,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_echomesh_core_checksum_method_coreeventslistener_on_message_status_updated() != 8847) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_echomesh_core_checksum_method_coreeventslistener_on_packet_received() != 48419) {
         return InitializationResult.apiChecksumMismatch
     }
 

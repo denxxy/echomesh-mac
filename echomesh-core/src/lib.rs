@@ -35,6 +35,9 @@ pub enum EchoMeshError {
 
     #[error("Storage error: {0}")]
     StorageError(String),
+
+    #[error("Client is not ready / session not in transport state")]
+    NotReady,
 }
 
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,6 +71,7 @@ pub trait CoreEventsListener: Send + Sync {
     fn on_state_changed(&self, state: NetworkState);
     fn on_message_received(&self, message: MessagePayload);
     fn on_message_status_updated(&self, message_id: String, status: DeliveryStatus);
+    fn on_packet_received(&self, sender: Vec<u8>, data: Vec<u8>);
 }
 
 #[uniffi::export]
