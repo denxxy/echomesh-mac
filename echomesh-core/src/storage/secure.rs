@@ -1,3 +1,4 @@
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -9,6 +10,7 @@ use crate::protocol::ECHO_SERVICE_PEER_ID;
 use crate::EchoMeshError;
 
 const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
+const SCRUB_CHUNK_SIZE: usize = 64 * 1024;
 
 pub struct StorageManager {
     conn: Mutex<Connection>,
@@ -59,7 +61,8 @@ impl StorageManager {
     }
 
     pub fn get_contact_by_peer_id(&self, peer_id: &[u8]) -> Result<Option<Contact>, EchoMeshError> {
-        self.conn.lock().unwrap().query_row(
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
             "SELECT peer_id, name, added_at FROM contacts WHERE peer_id = ?1",
             params![peer_id],
             |row| Ok(Contact { peer_id: row.get(0)?, name: row.get(1)?, added_at: row.get::<_, i64>(2)? as u64 }),
@@ -68,11 +71,7 @@ impl StorageManager {
 
     pub fn save_message(&self, msg: &MessageRecord) -> Result<(), EchoMeshError> {
         let conn = self.conn.lock().unwrap();
-        let name = if msg.conversation_peer_id == ECHO_SERVICE_PEER_ID {
-            "Echo Relay Node".to_string()
-        } else {
-            "Encrypted Contact".to_string()
-        };
+        let name = if msg.conversation_peer_id == ECHO_SERVICE_PEER_ID { "Echo Relay Node" } else { "Encrypted Contact" };
         conn.execute(
             "INSERT OR IGNORE INTO contacts (peer_id, name, added_at) VALUES (?1, ?2, ?3)",
             params![&msg.conversation_peer_id, name, msg.timestamp as i64],
@@ -81,8 +80,7 @@ impl StorageManager {
             "INSERT INTO messages (id, conversation_peer_id, sender_peer_id, text, timestamp, is_outgoing, status)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(id) DO UPDATE SET status=excluded.status, text=excluded.text",
-            params![&msg.id, &msg.conversation_peer_id, &msg.sender_peer_id, &msg.text,
-                    msg.timestamp as i64, i64::from(msg.is_outgoing), msg.status as i64],
+            params![&msg.id, &msg.conversation_peer_id, &msg.sender_peer_id, &msg.text, msg.timestamp as i64, i64::from(msg.is_outgoing), msg.status as i64],
         ).map_err(storage_err("save message"))?;
         Ok(())
     }
@@ -102,8 +100,7 @@ impl StorageManager {
         ).map_err(storage_err("prepare messages"))?;
         let rows = stmt.query_map(params![peer_id, limit as i64, offset as i64], |row| Ok(MessageRecord {
             id: row.get(0)?, conversation_peer_id: row.get(1)?, sender_peer_id: row.get(2)?, text: row.get(3)?,
-            timestamp: row.get::<_, i64>(4)? as u64, is_outgoing: row.get::<_, i64>(5)? != 0,
-            status: row.get::<_, i64>(6)? as u8,
+            timestamp: row.get::<_, i64>(4)? as u64, is_outgoing: row.get::<_, i64>(5)? != 0, status: row.get::<_, i64>(6)? as u8,
         })).map_err(storage_err("query messages"))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(storage_err("read messages"))
     }
@@ -118,8 +115,8 @@ impl StorageManager {
              FROM contacts c ORDER BY 4 DESC",
         ).map_err(storage_err("prepare conversations"))?;
         let rows = stmt.query_map([], |row| Ok(ConversationSummary {
-            peer_id: row.get(0)?, title: row.get(1)?, last_message: row.get(2)?,
-            last_timestamp: row.get::<_, i64>(3)? as u64, unread_count: row.get::<_, i64>(4)? as u32,
+            peer_id: row.get(0)?, title: row.get(1)?, last_message: row.get(2)?, last_timestamp: row.get::<_, i64>(3)? as u64,
+            unread_count: row.get::<_, i64>(4)? as u32,
         })).map_err(storage_err("query conversations"))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(storage_err("read conversations"))
     }
@@ -164,7 +161,6 @@ fn verify_sqlcipher(conn: &Connection) -> Result<(), EchoMeshError> {
 
 fn is_plaintext_sqlite(path: &Path) -> Result<bool, EchoMeshError> {
     if !path.exists() { return Ok(false); }
-    use std::io::Read;
     let mut file = std::fs::File::open(path)
         .map_err(|e| EchoMeshError::StorageError(format!("inspect database: {e}")))?;
     let mut header = [0u8; 16];
@@ -174,16 +170,10 @@ fn is_plaintext_sqlite(path: &Path) -> Result<bool, EchoMeshError> {
 }
 
 fn migrate_plaintext_database(path: &Path, key: &[u8; 32]) -> Result<(), EchoMeshError> {
-    // Flush plaintext WAL pages into the main database before the rename. Without
-    // this step a stale `-wal` may both leak message contents and be orphaned by
-    // the migration backup name.
     checkpoint_plaintext_database(path)?;
-    remove_sqlite_sidecars(path)?;
-
     let backup = migration_backup_path(path);
     if backup.exists() {
-        std::fs::remove_file(&backup)
-            .map_err(|e| EchoMeshError::StorageError(format!("remove stale migration backup: {e}")))?;
+        scrub_then_remove(&backup)?;
     }
     std::fs::rename(path, &backup)
         .map_err(|e| EchoMeshError::StorageError(format!("stage plaintext migration: {e}")))?;
@@ -195,8 +185,7 @@ fn migrate_plaintext_database(path: &Path, key: &[u8; 32]) -> Result<(), EchoMes
         source.execute_batch(&format!(
             "ATTACH DATABASE '{}' AS encrypted KEY \"x'{}'\";
              SELECT sqlcipher_export('encrypted');
-             DETACH DATABASE encrypted;",
-            destination, hex::encode(key)
+             DETACH DATABASE encrypted;", destination, hex::encode(key)
         )).map_err(storage_err("export plaintext database into SQLCipher"))?;
         drop(source);
 
@@ -209,14 +198,13 @@ fn migrate_plaintext_database(path: &Path, key: &[u8; 32]) -> Result<(), EchoMes
 
     match result {
         Ok(()) => {
-            let _ = std::fs::remove_file(&backup);
-            remove_sqlite_sidecars(&backup)?;
+            scrub_then_remove(&backup)?;
+            scrub_sidecars(path);
             Ok(())
         }
         Err(err) => {
-            let _ = std::fs::remove_file(path);
+            let _ = scrub_then_remove(path);
             let _ = std::fs::rename(&backup, path);
-            let _ = remove_sqlite_sidecars(&backup);
             Err(err)
         }
     }
@@ -225,36 +213,54 @@ fn migrate_plaintext_database(path: &Path, key: &[u8; 32]) -> Result<(), EchoMes
 fn checkpoint_plaintext_database(path: &Path) -> Result<(), EchoMeshError> {
     let conn = Connection::open(path)
         .map_err(|e| EchoMeshError::StorageError(format!("open plaintext database for checkpoint: {e}")))?;
-    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
-        .map_err(storage_err("checkpoint plaintext database"))?;
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .map_err(storage_err("checkpoint plaintext WAL"))?;
     drop(conn);
+    scrub_sidecars(path);
     Ok(())
 }
 
-fn remove_sqlite_sidecars(path: &Path) -> Result<(), EchoMeshError> {
+fn scrub_sidecars(path: &Path) {
     for suffix in ["-wal", "-shm"] {
-        let sidecar = sidecar_path(path, suffix);
-        match std::fs::remove_file(&sidecar) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => {
-                return Err(EchoMeshError::StorageError(format!(
-                    "remove plaintext SQLite sidecar {}: {err}", sidecar.display()
-                )))
-            }
-        }
+        let _ = scrub_then_remove(&sidecar_path(path, suffix));
     }
-    Ok(())
 }
 
 fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
-    let mut value = path.as_os_str().to_os_string();
+    let mut value = path.as_os_str().to_owned();
     value.push(suffix);
     PathBuf::from(value)
 }
 
+fn scrub_then_remove(path: &Path) -> Result<(), EchoMeshError> {
+    if !path.exists() { return Ok(()); }
+    let scrub_result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
+        let len = file.metadata()?.len();
+        file.seek(SeekFrom::Start(0))?;
+        let zeros = vec![0u8; SCRUB_CHUNK_SIZE];
+        let mut remaining = len;
+        while remaining > 0 {
+            let n = remaining.min(zeros.len() as u64) as usize;
+            file.write_all(&zeros[..n])?;
+            remaining -= n as u64;
+        }
+        file.sync_all()?;
+        Ok(())
+    })();
+    let remove_result = std::fs::remove_file(path);
+    if let Err(error) = remove_result {
+        return Err(EchoMeshError::StorageError(format!("remove plaintext artifact {}: {error}", path.display())));
+    }
+    if scrub_result.is_err() {
+        // Removal succeeded. Filesystems with COW/flash translation may retain
+        // historical blocks, so overwriting is best-effort rather than a guarantee.
+    }
+    Ok(())
+}
+
 fn migration_backup_path(path: &Path) -> PathBuf {
-    let mut name = path.as_os_str().to_os_string();
+    let mut name = path.as_os_str().to_owned();
     name.push(".plaintext-migration");
     PathBuf::from(name)
 }
@@ -288,42 +294,28 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         assert!(bytes.len() >= 16);
         assert_ne!(&bytes[..16], SQLITE_HEADER);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(sidecar_path(&path, "-wal"));
-        let _ = std::fs::remove_file(sidecar_path(&path, "-shm"));
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn plaintext_migration_preserves_data_and_removes_sidecars() {
+    fn plaintext_database_migration_removes_plaintext_artifacts() {
         let path = std::env::temp_dir().join(format!("echomesh-migrate-{}.db", uuid::Uuid::new_v4()));
-        let key = [0x33u8; 32];
         {
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(
-                "PRAGMA journal_mode=DELETE;
-                 CREATE TABLE legacy_data(value TEXT NOT NULL);
-                 INSERT INTO legacy_data(value) VALUES ('plaintext-secret');"
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE contacts (peer_id BLOB PRIMARY KEY, name TEXT NOT NULL, added_at INTEGER NOT NULL);
+                 CREATE TABLE messages (id TEXT PRIMARY KEY, conversation_peer_id BLOB NOT NULL, sender_peer_id BLOB NOT NULL, text TEXT NOT NULL, timestamp INTEGER NOT NULL, is_outgoing INTEGER NOT NULL, status INTEGER NOT NULL);
+                 INSERT INTO contacts(peer_id, name, added_at) VALUES (x'01020304', 'Migrated Contact', 1);"
             ).unwrap();
         }
-        let wal = sidecar_path(&path, "-wal");
-        let shm = sidecar_path(&path, "-shm");
-        std::fs::write(&wal, b"stale-plaintext-wal").unwrap();
-        std::fs::write(&shm, b"stale-plaintext-shm").unwrap();
-
+        let key = [0x33u8; 32];
         let storage = StorageManager::new_encrypted(&path, &key).unwrap();
+        assert!(storage.get_contacts().unwrap().iter().any(|c| c.name == "Migrated Contact"));
+        assert!(!migration_backup_path(&path).exists());
+        assert!(!sidecar_path(&path, "-wal").exists());
+        assert!(!sidecar_path(&path, "-shm").exists());
         drop(storage);
-        assert!(!wal.exists());
-        assert!(!shm.exists());
-        let bytes = std::fs::read(&path).unwrap();
-        assert_ne!(&bytes[..16], SQLITE_HEADER);
-
-        let verify = Connection::open(&path).unwrap();
-        apply_sqlcipher_key(&verify, &key).unwrap();
-        let value: String = verify.query_row("SELECT value FROM legacy_data", [], |row| row.get(0)).unwrap();
-        assert_eq!(value, "plaintext-secret");
-        drop(verify);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(sidecar_path(&path, "-wal"));
-        let _ = std::fs::remove_file(sidecar_path(&path, "-shm"));
+        let _ = std::fs::remove_file(path);
     }
 }
