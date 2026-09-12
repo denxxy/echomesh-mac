@@ -48,3 +48,4 @@ zeroize = "1"
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 btleplug = { version = "0.13", optional = true }
 ble-peripheral-rust = { version = "0.2", optional = true }
+keyring = { version = "4.2", default-features = false, features = ["v1"] }
