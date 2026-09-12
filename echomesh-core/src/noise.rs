@@ -13,6 +13,15 @@ pub struct NoiseSession {
     transport: snow::TransportState,
 }
 
+impl std::fmt::Debug for NoiseSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NoiseSession")
+            .field("pattern", &NOISE_PATTERN)
+            .field("state", &"[ENCRYPTED]")
+            .finish()
+    }
+}
+
 impl NoiseSession {
     pub fn new(transport: snow::TransportState) -> Self {
         Self { transport }
@@ -52,6 +61,8 @@ impl NoiseSession {
     }
 }
 
+pub const NOISE_PROLOGUE: &[u8] = b"";
+
 pub async fn client_noise_handshake<S>(
     stream: &mut S,
     server_public_key: &[u8],
@@ -67,11 +78,16 @@ where
         });
     }
 
-    let builder = snow::Builder::new(
+    let mut builder = snow::Builder::new(
         NOISE_PATTERN
             .parse()
             .map_err(|e: snow::Error| EchoMeshError::NoiseError(e.to_string()))?,
     );
+    if !NOISE_PROLOGUE.is_empty() {
+        builder = builder
+            .prologue(NOISE_PROLOGUE)
+            .map_err(|e| EchoMeshError::NoiseError(e.to_string()))?;
+    }
 
     let mut initiator = builder
         .remote_public_key(server_public_key)
@@ -100,9 +116,10 @@ where
         Ok(Ok(())) => debug!("sent Noise handshake message 1 to relay"),
         Ok(Err(e)) => return Err(EchoMeshError::ConnectionError(e.to_string())),
         Err(_) => {
+            error!("Handshake timed out waiting for relay response");
             return Err(EchoMeshError::HandshakeTimeout(
-                "Timeout sending handshake message 1".to_string(),
-            ))
+                "Handshake timed out waiting for relay response".to_string(),
+            ));
         }
     }
 
@@ -135,8 +152,9 @@ where
         Ok(Ok(m)) => m,
         Ok(Err(e)) => return Err(e),
         Err(_) => {
+            error!("Handshake timed out waiting for relay response");
             return Err(EchoMeshError::HandshakeTimeout(
-                "Timeout waiting for handshake message 2 from relay".to_string(),
+                "Handshake timed out waiting for relay response".to_string(),
             ));
         }
     };

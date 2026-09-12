@@ -11,6 +11,7 @@ public struct SettingsView: View {
     @State private var formHost: String = "77.81.5.109"
     @State private var formPortString: String = "8443"
     @State private var formKeyBase64: String = ""
+    @State private var formSecretTokenHex: String = ""
 
     // Health Check state
     @State private var isHealthChecking: Bool = false
@@ -49,6 +50,15 @@ public struct SettingsView: View {
                 // MARK: - Tab 1: Сеть и Релеи
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
+                        // Section: Диагностика сети
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Диагностика сети")
+                                .font(.headline)
+                            networkDiagnosticsView
+                        }
+
+                        Divider()
+
                         // Section: Active Relays
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {
@@ -127,6 +137,18 @@ public struct SettingsView: View {
                                 keyValidationHintView
                             }
 
+                            // Secret Token (Hex / Reality Auth)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Secret Token (Hex / Reality Auth):")
+                                    .font(.caption.bold())
+                                TextField("e.g. a1b2c3d4...", text: $formSecretTokenHex)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.system(.body, design: .monospaced))
+                                Text("Секретный токен для обхода DPI-фильтрации релея.")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+
                             // Action buttons: Save, Health Check
                             HStack(spacing: 12) {
                                 Button(action: saveFormEndpoint) {
@@ -187,7 +209,20 @@ public struct SettingsView: View {
                     Label("Сеть и Релеи", systemImage: "network")
                 }
 
-                // MARK: - Tab 2: Журнал сети (Network Logs)
+                // MARK: - Tab 2: Диагностика сети
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Диагностика сетевого моста FFI")
+                            .font(.headline)
+                        networkDiagnosticsView
+                    }
+                    .padding(20)
+                }
+                .tabItem {
+                    Label("Диагностика сети", systemImage: "bolt.horizontal.circle")
+                }
+
+                // MARK: - Tab 3: Журнал сети (Network Logs)
                 VStack(spacing: 0) {
                     HStack {
                         Text("Последние \(appState.logService.entries.count) событий сети")
@@ -452,6 +487,7 @@ public struct SettingsView: View {
         formHost = "77.81.5.109"
         formPortString = "8443"
         formKeyBase64 = ""
+        formSecretTokenHex = ""
         healthCheckLatency = nil
         healthCheckError = nil
     }
@@ -462,6 +498,7 @@ public struct SettingsView: View {
         formHost = endpoint.host
         formPortString = String(endpoint.port)
         formKeyBase64 = endpoint.publicKeyBase64
+        formSecretTokenHex = endpoint.secretTokenHex
         healthCheckLatency = nil
         healthCheckError = nil
     }
@@ -470,6 +507,7 @@ public struct SettingsView: View {
         let port = UInt16(formPortString.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 8443
         let name = formName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Primary Relay" : formName
         let host = formHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = formSecretTokenHex.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if let id = editingEndpointId {
             var updated = RelayEndpoint(
@@ -477,7 +515,8 @@ public struct SettingsView: View {
                 name: name,
                 host: host,
                 port: port,
-                publicKeyBase64: formKeyBase64.trimmingCharacters(in: .whitespacesAndNewlines)
+                publicKeyBase64: formKeyBase64.trimmingCharacters(in: .whitespacesAndNewlines),
+                secretTokenHex: token
             )
             // Preserve default flag if it was default
             if let existing = appState.configManager.endpoints.first(where: { $0.id == id }) {
@@ -490,6 +529,7 @@ public struct SettingsView: View {
                 host: host,
                 port: port,
                 publicKeyBase64: formKeyBase64.trimmingCharacters(in: .whitespacesAndNewlines),
+                secretTokenHex: token,
                 isDefault: appState.configManager.endpoints.isEmpty
             )
             appState.configManager.add(endpoint: newEndpoint)
@@ -509,7 +549,8 @@ public struct SettingsView: View {
             name: formName,
             host: formHost.trimmingCharacters(in: .whitespacesAndNewlines),
             port: port,
-            publicKeyBase64: formKeyBase64.trimmingCharacters(in: .whitespacesAndNewlines)
+            publicKeyBase64: formKeyBase64.trimmingCharacters(in: .whitespacesAndNewlines),
+            secretTokenHex: formSecretTokenHex.trimmingCharacters(in: .whitespacesAndNewlines)
         )
 
         isHealthChecking = true
@@ -546,6 +587,125 @@ public struct SettingsView: View {
         case .warning: return .orange
         case .error: return .red
         case .debug: return .purple
+        }
+    }
+
+    // MARK: - Section: Диагностика сети (Network Diagnostics)
+    @ViewBuilder
+    private var networkDiagnosticsView: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            // Header / Current State & Force Connect Button
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Текущее состояние:")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(connectionStatusColor(appState.connectionState))
+                            .frame(width: 10, height: 10)
+                        Text(appState.connectionState.title)
+                            .font(.system(.body, design: .monospaced).bold())
+                            .foregroundColor(connectionStatusColor(appState.connectionState))
+                    }
+                }
+
+                Spacer()
+
+                Button(action: {
+                    appState.forceConnect()
+                }) {
+                    Label("Принудительное подключение", systemImage: "bolt.horizontal.fill")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(12)
+            .background(Color(NSColor.controlBackgroundColor))
+            .cornerRadius(8)
+
+            // Last Error Message field if present
+            if let lastErr = appState.lastErrorMessage, !lastErr.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.red)
+                        Text("Последняя системная ошибка (lastErrorMessage):")
+                            .font(.caption.bold())
+                            .foregroundColor(.red)
+                    }
+                    Text(lastErr)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.red)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.red.opacity(0.12))
+                        .cornerRadius(6)
+                        .textSelection(.enabled)
+                }
+            }
+
+            // Real-time FFI log: Last 10 events
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Текстовый лог событий моста FFI (последние 10):")
+                        .font(.caption.bold())
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text("Всего: \(appState.logService.entries.count)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+
+                let recentFfiLogs = Array(appState.logService.entries.suffix(10).reversed())
+                if recentFfiLogs.isEmpty {
+                    Text("Журнал событий FFI пуст")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .background(Color(NSColor.controlBackgroundColor))
+                        .cornerRadius(6)
+                } else {
+                    VStack(spacing: 4) {
+                        ForEach(recentFfiLogs) { entry in
+                            HStack(alignment: .top, spacing: 6) {
+                                Text(entry.timestamp, style: .time)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 60, alignment: .leading)
+
+                                Text(entry.level.rawValue)
+                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(logBadgeColor(entry.level).opacity(0.15))
+                                    .foregroundColor(logBadgeColor(entry.level))
+                                    .cornerRadius(3)
+
+                                Text(entry.message)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .lineLimit(2)
+                                    .textSelection(.enabled)
+
+                                Spacer()
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                    .padding(8)
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .cornerRadius(6)
+                }
+            }
+        }
+    }
+
+    private func connectionStatusColor(_ state: ConnectionUIState) -> Color {
+        switch state {
+        case .disconnected: return .red
+        case .connecting: return .yellow
+        case .connected: return .green
+        case .failed: return .red
         }
     }
 }

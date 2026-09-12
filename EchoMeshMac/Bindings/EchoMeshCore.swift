@@ -499,7 +499,7 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 public protocol EchoMeshClientProtocol: AnyObject, Sendable {
     
-    func connect(relayAddress: String, relayPublicKey: Data) throws 
+    func connect(relayAddress: String, relayPublicKey: Data, secretTokenHex: String?) throws 
     
     func currentState()  -> NetworkState
     
@@ -575,10 +575,11 @@ public convenience init(storagePath: String, listener: CoreEventsListener)throws
     
 
     
-open func connect(relayAddress: String, relayPublicKey: Data)throws   {try rustCallWithError(FfiConverterTypeEchoMeshError_lift) {
+open func connect(relayAddress: String, relayPublicKey: Data, secretTokenHex: String?)throws   {try rustCallWithError(FfiConverterTypeEchoMeshError_lift) {
     uniffi_echomesh_core_fn_method_echomeshclient_connect(self.uniffiClonePointer(),
         FfiConverterString.lower(relayAddress),
-        FfiConverterData.lower(relayPublicKey),$0
+        FfiConverterData.lower(relayPublicKey),
+        FfiConverterOptionString.lower(secretTokenHex),$0
     )
 }
 }
@@ -1343,6 +1344,30 @@ public func FfiConverterCallbackInterfaceCoreEventsListener_lift(_ handle: UInt6
 public func FfiConverterCallbackInterfaceCoreEventsListener_lower(_ v: CoreEventsListener) -> UInt64 {
     return FfiConverterCallbackInterfaceCoreEventsListener.lower(v)
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
+    typealias SwiftType = String?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
 public func derivePublicKey(privateKey: Data)throws  -> IdentityKeyPair  {
     return try  FfiConverterTypeIdentityKeyPair_lift(try rustCallWithError(FfiConverterTypeEchoMeshError_lift) {
     uniffi_echomesh_core_fn_func_derive_public_key(
@@ -1378,7 +1403,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_echomesh_core_checksum_func_generate_identity_keypair() != 29642) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_echomesh_core_checksum_method_echomeshclient_connect() != 27604) {
+    if (uniffi_echomesh_core_checksum_method_echomeshclient_connect() != 40480) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_echomesh_core_checksum_method_echomeshclient_current_state() != 50013) {

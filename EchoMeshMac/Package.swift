@@ -28,7 +28,7 @@ let package = Package(
                 "EchoMeshMac.entitlements",
                 "Info.plist",
                 "Frameworks",
-                "EchoMeshMac.app",
+                "build_app.sh",
                 "run.sh"
             ],
             sources: [

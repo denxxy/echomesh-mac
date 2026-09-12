@@ -32,7 +32,12 @@ public struct RelayEndpoint: Codable, Identifiable, Hashable, Sendable {
     public var host: String
     public var port: UInt16
     public var publicKeyBase64: String
+    public var secretTokenHex: String = "" // Новое поле токена маскировки
     public var isDefault: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, host, port, publicKeyBase64, secretTokenHex, isDefault
+    }
 
     public init(
         id: UUID = UUID(),
@@ -40,6 +45,7 @@ public struct RelayEndpoint: Codable, Identifiable, Hashable, Sendable {
         host: String,
         port: UInt16 = 8443,
         publicKeyBase64: String = "",
+        secretTokenHex: String = "",
         isDefault: Bool = false
     ) {
         self.id = id
@@ -47,7 +53,19 @@ public struct RelayEndpoint: Codable, Identifiable, Hashable, Sendable {
         self.host = host
         self.port = port
         self.publicKeyBase64 = publicKeyBase64
+        self.secretTokenHex = secretTokenHex
         self.isDefault = isDefault
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.name = try container.decode(String.self, forKey: .name)
+        self.host = try container.decode(String.self, forKey: .host)
+        self.port = try container.decode(UInt16.self, forKey: .port)
+        self.publicKeyBase64 = try container.decodeIfPresent(String.self, forKey: .publicKeyBase64) ?? ""
+        self.secretTokenHex = try container.decodeIfPresent(String.self, forKey: .secretTokenHex) ?? ""
+        self.isDefault = try container.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
     }
 
     /// Formatted address string in the format "host:port" (or "[ipv6]:port" for raw IPv6).
@@ -146,7 +164,7 @@ public final class RelayConfigManager: Sendable {
         name: "Primary Relay",
         host: "77.81.5.109",
         port: 8443,
-        publicKeyBase64: "",
+        publicKeyBase64: "oZvg53goRI3fNUZz5VwK6XzFI9KIkduWu6gYZsms1gY=",
         isDefault: true
     )
 
@@ -194,10 +212,16 @@ public final class RelayConfigManager: Sendable {
         }
 
         self.endpoints = decoded
-        if let defaultNode = decoded.first(where: { $0.isDefault }) {
+        // Ensure default relay has verified key if it was saved empty
+        for i in self.endpoints.indices {
+            if self.endpoints[i].host == "77.81.5.109" && self.endpoints[i].publicKeyBase64.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                self.endpoints[i].publicKeyBase64 = "oZvg53goRI3fNUZz5VwK6XzFI9KIkduWu6gYZsms1gY="
+            }
+        }
+        if let defaultNode = self.endpoints.first(where: { $0.isDefault }) {
             self.activeEndpointId = defaultNode.id
         } else {
-            self.activeEndpointId = decoded.first?.id
+            self.activeEndpointId = self.endpoints.first?.id
         }
     }
 

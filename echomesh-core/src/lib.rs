@@ -1,12 +1,15 @@
+pub mod api;
 pub mod client;
 pub mod crypto;
 pub mod noise;
 pub mod protocol;
+pub mod transport;
 
-pub use client::EchoMeshClient;
+pub use api::EchoMeshClient;
 pub use crypto::IdentityKeyPair;
 pub use noise::{client_noise_handshake, NoiseFramedStream, NoiseSession};
 pub use protocol::{Frame, FrameCodec, FRAME_SIZE, MAX_PAYLOAD_SIZE};
+pub use transport::obfuscation::PseudoTlsBuilder;
 
 uniffi::setup_scaffolding!();
 

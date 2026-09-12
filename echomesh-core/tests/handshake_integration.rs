@@ -101,3 +101,26 @@ async fn test_end_to_end_noise_nk_handshake_and_frame_exchange() {
 
     server_task.await.unwrap();
 }
+
+#[tokio::test]
+async fn test_handshake_timeout_when_relay_does_not_respond() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_addr = listener.local_addr().unwrap();
+
+    let _server_task = tokio::spawn(async move {
+        let (_stream, _peer_addr) = listener.accept().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    });
+
+    let mut client_stream = TcpStream::connect(server_addr).await.unwrap();
+    let dummy_key = [0x42u8; 32];
+    let res = client_noise_handshake(&mut client_stream, &dummy_key, Duration::from_millis(200)).await;
+    match res {
+        Err(echomesh_core::EchoMeshError::HandshakeTimeout(msg)) => {
+            assert_eq!(msg, "Handshake timed out waiting for relay response");
+        }
+        Err(other) => panic!("Expected HandshakeTimeout, got {:?}", other),
+        Ok(_) => panic!("Expected HandshakeTimeout, got Ok"),
+    }
+}
+

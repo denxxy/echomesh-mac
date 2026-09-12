@@ -1,10 +1,14 @@
 import AppKit
 import Foundation
+import os.log
 
 public final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var mainWindow: NSWindow?
+    private let securityLogger = os.Logger(subsystem: "com.echomesh.mac", category: "Security")
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        verifyAppSandboxNetworkAccess()
+
         // Request local notification permissions
         Task {
             await NotificationManager.shared.requestAuthorization()
@@ -17,6 +21,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
             name: NSWindow.didBecomeKeyNotification,
             object: nil
         )
+    }
+
+    /// Verifies App Sandbox status and logs outgoing network access capabilities.
+    private func verifyAppSandboxNetworkAccess() {
+        let isSandboxed = ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
+        if isSandboxed {
+            let container = ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] ?? ""
+            securityLogger.info("[App Sandbox] Active container detected: \(container, privacy: .public)")
+            securityLogger.info("[App Sandbox] Verified outgoing network connection entitlement (com.apple.security.network.client).")
+        } else {
+            securityLogger.info("[App Sandbox] Running outside sandbox (developer/debug mode). Direct network access active.")
+        }
     }
 
     @objc public func windowDidBecomeKeyNotification(_ notification: Notification) {

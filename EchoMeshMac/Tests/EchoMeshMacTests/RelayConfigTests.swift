@@ -198,7 +198,7 @@ final class RelayConfigTests: XCTestCase {
         XCTAssertEqual(initialNode.name, "Primary Relay")
         XCTAssertEqual(initialNode.host, "77.81.5.109")
         XCTAssertEqual(initialNode.port, 8443)
-        XCTAssertEqual(initialNode.publicKeyBase64, "")
+        XCTAssertEqual(initialNode.publicKeyBase64, "oZvg53goRI3fNUZz5VwK6XzFI9KIkduWu6gYZsms1gY=")
         XCTAssertTrue(initialNode.isDefault)
         XCTAssertEqual(manager.activeEndpoint.id, initialNode.id)
     }
@@ -258,5 +258,39 @@ final class RelayConfigTests: XCTestCase {
         manager.delete(id: node2.id)
         XCTAssertEqual(manager.endpoints.count, 1)
         XCTAssertFalse(manager.endpoints.contains(where: { $0.id == node2.id }))
+    }
+
+    func testSecretTokenHexPersistenceAndBackwardCompatibility() throws {
+        // 1. New model encoding/decoding
+        let endpointWithToken = RelayEndpoint(
+            name: "Reality Secure Relay",
+            host: "reality.echomesh.io",
+            port: 8443,
+            publicKeyBase64: "oZvg53goRI3fNUZz5VwK6XzFI9KIkduWu6gYZsms1gY=",
+            secretTokenHex: "a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890",
+            isDefault: false
+        )
+
+        let encoded = try JSONEncoder().encode(endpointWithToken)
+        let decoded = try JSONDecoder().decode(RelayEndpoint.self, from: encoded)
+
+        XCTAssertEqual(decoded.secretTokenHex, "a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890")
+        XCTAssertEqual(decoded.name, "Reality Secure Relay")
+
+        // 2. Backward compatibility: older JSON without secretTokenHex
+        let legacyJson = """
+        {
+            "id": "\(UUID().uuidString)",
+            "name": "Legacy Relay",
+            "host": "legacy.echomesh.io",
+            "port": 8443,
+            "publicKeyBase64": "oZvg53goRI3fNUZz5VwK6XzFI9KIkduWu6gYZsms1gY=",
+            "isDefault": true
+        }
+        """.data(using: .utf8)!
+
+        let decodedLegacy = try JSONDecoder().decode(RelayEndpoint.self, from: legacyJson)
+        XCTAssertEqual(decodedLegacy.secretTokenHex, "")
+        XCTAssertEqual(decodedLegacy.name, "Legacy Relay")
     }
 }

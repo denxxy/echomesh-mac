@@ -2,6 +2,23 @@ import Foundation
 import SwiftUI
 import Observation
 
+/// Display state of network connection for diagnostics and UI.
+public enum ConnectionUIState: Equatable, Sendable {
+    case disconnected
+    case connecting
+    case connected
+    case failed(String)
+
+    public var title: String {
+        switch self {
+        case .disconnected: return "Disconnected"
+        case .connecting: return "Connecting"
+        case .connected: return "Connected"
+        case .failed: return "Failed"
+        }
+    }
+}
+
 /// Main application state coordinating network lifecycle, identity, and user configuration.
 @Observable
 @MainActor
@@ -9,6 +26,8 @@ public final class AppState {
     public static let shared = AppState()
 
     public var networkState: NetworkState = .offline
+    public var connectionState: ConnectionUIState = .disconnected
+    public var lastErrorMessage: String? = nil
     public var pingMs: UInt32 = 0
     public var identity: IdentityKeyPair? = nil
     public var isSettingsPresented: Bool = false
@@ -67,11 +86,29 @@ public final class AppState {
                 guard !Task.isCancelled else { break }
                 switch event {
                 case .stateChanged(let state):
-                    self.networkState = state
-                    let currentPing = await self.bridge.pingMs()
-                    self.pingMs = currentPing
-                    if state == .connectedRealityRelay || state == .connectedBleMeshFallback {
-                        self.lastConnectionError = nil
+                    let newState: ConnectionUIState
+                    switch state {
+                    case .offline:
+                        newState = .disconnected
+                    case .connecting:
+                        newState = .connecting
+                    case .connectedRealityRelay, .connectedBleMeshFallback:
+                        newState = .connected
+                    }
+
+                    let ping = await self.bridge.pingMs()
+                    Task { @MainActor [weak self] in
+                        guard let self = self else { return }
+                        self.networkState = state
+                        self.connectionState = newState
+                        self.pingMs = ping
+                        if case .failed(let reason) = newState {
+                            self.lastErrorMessage = reason
+                            print("[EchoMesh UI] Ошибка соединения: \(reason)")
+                        } else if newState == .connected {
+                            self.lastErrorMessage = nil
+                            self.lastConnectionError = nil
+                        }
                     }
 
                 case .messageReceived, .messageStatusUpdated:
@@ -86,23 +123,45 @@ public final class AppState {
         connectToRelay(currentEndpoint)
     }
 
+    /// Forces immediate reconnection to the active relay endpoint.
+    public func forceConnect() {
+        connectToRelay(currentEndpoint)
+    }
+
     /// Connects to a specific relay endpoint.
     public func connectToRelay(_ endpoint: RelayEndpoint) {
         configManager.setActive(id: endpoint.id)
-        networkState = .connecting
-        lastConnectionError = nil
+
+        Task { @MainActor in
+            self.networkState = .connecting
+            self.connectionState = .connecting
+            self.lastErrorMessage = nil
+            self.lastConnectionError = nil
+        }
 
         Task {
             do {
                 try await bridge.connectToRelay(endpoint: endpoint)
                 let currentPing = await bridge.pingMs()
-                self.pingMs = currentPing
-                self.lastConnectionError = nil
+                Task { @MainActor in
+                    self.connectionState = .connected
+                    self.pingMs = currentPing
+                    self.lastErrorMessage = nil
+                    self.lastConnectionError = nil
+                }
             } catch {
                 let desc = error.localizedDescription
-                self.networkState = .offline
-                self.lastConnectionError = desc
-                self.errorMessage = "Connection error: \(desc)"
+                Task { @MainActor in
+                    let newState: ConnectionUIState = .failed(desc)
+                    self.networkState = .offline
+                    self.connectionState = newState
+                    if case .failed(let reason) = newState {
+                        self.lastErrorMessage = reason
+                        print("[EchoMesh UI] Ошибка соединения: \(reason)")
+                    }
+                    self.lastConnectionError = desc
+                    self.errorMessage = "Connection error: \(desc)"
+                }
             }
         }
     }
@@ -118,11 +177,18 @@ public final class AppState {
         Task {
             do {
                 try await bridge.disconnect()
-                self.networkState = .offline
-                self.pingMs = 0
-                self.lastConnectionError = nil
+                Task { @MainActor in
+                    self.networkState = .offline
+                    self.connectionState = .disconnected
+                    self.pingMs = 0
+                    self.lastConnectionError = nil
+                }
             } catch {
-                self.errorMessage = "Failed to disconnect: \(error.localizedDescription)"
+                let desc = error.localizedDescription
+                Task { @MainActor in
+                    self.errorMessage = "Failed to disconnect: \(desc)"
+                    self.lastErrorMessage = desc
+                }
             }
         }
     }

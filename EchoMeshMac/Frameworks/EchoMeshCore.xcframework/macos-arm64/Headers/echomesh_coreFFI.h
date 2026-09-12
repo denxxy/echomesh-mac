@@ -299,7 +299,7 @@ void*_Nonnull uniffi_echomesh_core_fn_constructor_echomeshclient_new(RustBuffer 
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ECHOMESH_CORE_FN_METHOD_ECHOMESHCLIENT_CONNECT
 #define UNIFFI_FFIDEF_UNIFFI_ECHOMESH_CORE_FN_METHOD_ECHOMESHCLIENT_CONNECT
-void uniffi_echomesh_core_fn_method_echomeshclient_connect(void*_Nonnull ptr, RustBuffer relay_address, RustBuffer relay_public_key, RustCallStatus *_Nonnull out_status
+void uniffi_echomesh_core_fn_method_echomeshclient_connect(void*_Nonnull ptr, RustBuffer relay_address, RustBuffer relay_public_key, RustBuffer secret_token_hex, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ECHOMESH_CORE_FN_METHOD_ECHOMESHCLIENT_CURRENT_STATE

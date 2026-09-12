@@ -14,6 +14,7 @@ async fn main() {
 
     let mut relay_addr: Option<String> = None;
     let mut key_base64: Option<String> = None;
+    let mut token_hex: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -30,6 +31,12 @@ async fn main() {
                     i += 1;
                 }
             }
+            "--token" => {
+                if i + 1 < args.len() {
+                    token_hex = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
             "-h" | "--help" => {
                 print_usage(&args[0]);
                 exit(0);
@@ -39,6 +46,9 @@ async fn main() {
             }
             other if other.starts_with("--key=") => {
                 key_base64 = Some(other.trim_start_matches("--key=").to_string());
+            }
+            other if other.starts_with("--token=") => {
+                token_hex = Some(other.trim_start_matches("--token=").to_string());
             }
             _ => {}
         }
@@ -107,7 +117,25 @@ async fn main() {
         }
     };
 
-    // 2. Noise Handshake
+    // 2. Send Pseudo-TLS ClientHello
+    let secret_bytes = match token_hex.as_deref() {
+        Some(s) if !s.trim().is_empty() => {
+            hex::decode(s.trim()).unwrap_or_else(|_| s.trim().as_bytes().to_vec())
+        }
+        _ => vec![0u8; 32],
+    };
+
+    use tokio::io::AsyncWriteExt;
+    let tls_builder = echomesh_core::transport::PseudoTlsBuilder::new(secret_bytes, "cloudflare.com");
+    let client_hello = tls_builder.build();
+    if let Err(e) = tcp_stream.write_all(&client_hello).await {
+        eprintln!("\x1b[31m[FAIL]\x1b[0m Failed sending Pseudo-TLS ClientHello: {}", e);
+        exit(1);
+    }
+    let _ = tcp_stream.flush().await;
+    println!("\x1b[32m[OK]\x1b[0m Pseudo-TLS ClientHello Sent");
+
+    // 3. Noise Handshake
     let session = match client_noise_handshake(&mut tcp_stream, &key_bytes, timeout_dur).await {
         Ok(s) => {
             println!("\x1b[32m[OK]\x1b[0m Handshake Completed");
@@ -160,7 +188,7 @@ async fn main() {
             exit(1);
         }
         Err(_) => {
-            eprintln!("\x1b[31m[FAIL]\x1b[0m Timed out waiting for ping ack");
+            eprintln!("\x1b[31m[FAIL]\x1b[0m Handshake timed out waiting for relay response");
             exit(1);
         }
     }
@@ -169,5 +197,5 @@ async fn main() {
 }
 
 fn print_usage(prog: &str) {
-    eprintln!("Usage: {} --relay <IP:PORT> --key <BASE64_PUBLIC_KEY>", prog);
+    eprintln!("Usage: {} --relay <IP:PORT> --key <BASE64_PUBLIC_KEY> [--token <HEX_SECRET_TOKEN>]", prog);
 }

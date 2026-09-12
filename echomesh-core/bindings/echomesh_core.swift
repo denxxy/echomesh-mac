@@ -499,7 +499,7 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 public protocol EchoMeshClientProtocol: AnyObject, Sendable {
     
-    func connect(relayUrl: String, relayKey: Data) throws 
+    func connect(relayAddress: String, relayPublicKey: Data, secretTokenHex: String?) throws 
     
     func currentState()  -> NetworkState
     
@@ -575,10 +575,11 @@ public convenience init(storagePath: String, listener: CoreEventsListener)throws
     
 
     
-open func connect(relayUrl: String, relayKey: Data)throws   {try rustCallWithError(FfiConverterTypeEchoMeshError_lift) {
+open func connect(relayAddress: String, relayPublicKey: Data, secretTokenHex: String?)throws   {try rustCallWithError(FfiConverterTypeEchoMeshError_lift) {
     uniffi_echomesh_core_fn_method_echomeshclient_connect(self.uniffiClonePointer(),
-        FfiConverterString.lower(relayUrl),
-        FfiConverterData.lower(relayKey),$0
+        FfiConverterString.lower(relayAddress),
+        FfiConverterData.lower(relayPublicKey),
+        FfiConverterOptionString.lower(secretTokenHex),$0
     )
 }
 }
@@ -959,6 +960,12 @@ public enum EchoMeshError: Swift.Error {
     
     case InvalidKeyLength(expected: UInt32, actual: UInt32
     )
+    case HandshakeTimeout(String
+    )
+    case HandshakeUnexpectedEof(String
+    )
+    case NoiseError(String
+    )
     case ConnectionError(String
     )
     case RuntimeError(String
@@ -985,13 +992,22 @@ public struct FfiConverterTypeEchoMeshError: FfiConverterRustBuffer {
             expected: try FfiConverterUInt32.read(from: &buf), 
             actual: try FfiConverterUInt32.read(from: &buf)
             )
-        case 2: return .ConnectionError(
+        case 2: return .HandshakeTimeout(
             try FfiConverterString.read(from: &buf)
             )
-        case 3: return .RuntimeError(
+        case 3: return .HandshakeUnexpectedEof(
             try FfiConverterString.read(from: &buf)
             )
-        case 4: return .StorageError(
+        case 4: return .NoiseError(
+            try FfiConverterString.read(from: &buf)
+            )
+        case 5: return .ConnectionError(
+            try FfiConverterString.read(from: &buf)
+            )
+        case 6: return .RuntimeError(
+            try FfiConverterString.read(from: &buf)
+            )
+        case 7: return .StorageError(
             try FfiConverterString.read(from: &buf)
             )
 
@@ -1012,18 +1028,33 @@ public struct FfiConverterTypeEchoMeshError: FfiConverterRustBuffer {
             FfiConverterUInt32.write(actual, into: &buf)
             
         
-        case let .ConnectionError(v1):
+        case let .HandshakeTimeout(v1):
             writeInt(&buf, Int32(2))
             FfiConverterString.write(v1, into: &buf)
             
         
-        case let .RuntimeError(v1):
+        case let .HandshakeUnexpectedEof(v1):
             writeInt(&buf, Int32(3))
             FfiConverterString.write(v1, into: &buf)
             
         
-        case let .StorageError(v1):
+        case let .NoiseError(v1):
             writeInt(&buf, Int32(4))
+            FfiConverterString.write(v1, into: &buf)
+            
+        
+        case let .ConnectionError(v1):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(v1, into: &buf)
+            
+        
+        case let .RuntimeError(v1):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(v1, into: &buf)
+            
+        
+        case let .StorageError(v1):
+            writeInt(&buf, Int32(7))
             FfiConverterString.write(v1, into: &buf)
             
         }
@@ -1313,6 +1344,30 @@ public func FfiConverterCallbackInterfaceCoreEventsListener_lift(_ handle: UInt6
 public func FfiConverterCallbackInterfaceCoreEventsListener_lower(_ v: CoreEventsListener) -> UInt64 {
     return FfiConverterCallbackInterfaceCoreEventsListener.lower(v)
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
+    typealias SwiftType = String?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
 public func derivePublicKey(privateKey: Data)throws  -> IdentityKeyPair  {
     return try  FfiConverterTypeIdentityKeyPair_lift(try rustCallWithError(FfiConverterTypeEchoMeshError_lift) {
     uniffi_echomesh_core_fn_func_derive_public_key(
@@ -1348,7 +1403,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_echomesh_core_checksum_func_generate_identity_keypair() != 29642) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_echomesh_core_checksum_method_echomeshclient_connect() != 34909) {
+    if (uniffi_echomesh_core_checksum_method_echomeshclient_connect() != 40480) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_echomesh_core_checksum_method_echomeshclient_current_state() != 50013) {
