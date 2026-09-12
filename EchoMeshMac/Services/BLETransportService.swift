@@ -23,7 +23,12 @@ public final class BLETransportService: NSObject {
     private var started = false
     private var peers: [Data: CBPeripheral] = [:]
     private var inbound: [UUID: CBCharacteristic] = [:]
-    private var assemblies: [UInt32: Assembly] = [:]
+    private var assemblies: [AssemblyKey: Assembly] = [:]
+
+    private struct AssemblyKey: Hashable {
+        let source: UUID
+        let messageId: UInt32
+    }
 
     private struct Assembly {
         var parts: [Data?]
@@ -120,7 +125,7 @@ public final class BLETransportService: NSObject {
         }
     }
 
-    private func ingest(_ fragment: Data) {
+    private func ingest(_ fragment: Data, source: UUID) {
         guard fragment.count >= Self.headerSize, fragment.prefix(4) == Self.magic else { return }
         let b = [UInt8](fragment)
         let id = UInt32(b[4]) << 24 | UInt32(b[5]) << 16 | UInt32(b[6]) << 8 | UInt32(b[7])
@@ -128,13 +133,14 @@ public final class BLETransportService: NSObject {
         let total = Int(UInt16(b[10]) << 8 | UInt16(b[11]))
         guard total > 0, total <= Self.maxFragments, index < total else { return }
         let payload = fragment.subdata(in: Self.headerSize..<fragment.count)
-        var a = assemblies[id] ?? Assembly(parts: Array(repeating: nil, count: total))
-        guard a.parts.count == total else { assemblies.removeValue(forKey: id); return }
+        let key = AssemblyKey(source: source, messageId: id)
+        var a = assemblies[key] ?? Assembly(parts: Array(repeating: nil, count: total))
+        guard a.parts.count == total else { assemblies.removeValue(forKey: key); return }
         if a.parts[index] == nil { a.parts[index] = payload; a.received += 1; a.bytes += payload.count }
-        guard a.bytes <= Self.maxPacket else { assemblies.removeValue(forKey: id); return }
-        assemblies[id] = a
+        guard a.bytes <= Self.maxPacket else { assemblies.removeValue(forKey: key); return }
+        assemblies[key] = a
         guard a.received == total else { return }
-        assemblies.removeValue(forKey: id)
+        assemblies.removeValue(forKey: key)
         var packet = Data(capacity: a.bytes)
         for part in a.parts { guard let part else { return }; packet.append(part) }
         Task {
@@ -168,6 +174,7 @@ extension BLETransportService: CBCentralManagerDelegate {
                                error: Error?) {
         inbound.removeValue(forKey: peripheral.identifier)
         peers = peers.filter { $0.value.identifier != peripheral.identifier }
+        assemblies = assemblies.filter { $0.key.source != peripheral.identifier }
         if started, central.state == .poweredOn { central.connect(peripheral) }
     }
 }
@@ -220,7 +227,7 @@ extension BLETransportService: CBPeripheralManagerDelegate {
 
     public func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
         for request in requests where request.characteristic.uuid == Self.inboundUUID {
-            if let value = request.value { ingest(value) }
+            if let value = request.value { ingest(value, source: request.central.identifier) }
             peripheral.respond(to: request, withResult: .success)
         }
     }
