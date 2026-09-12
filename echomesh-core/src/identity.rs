@@ -10,6 +10,7 @@ use zeroize::Zeroize;
 use crate::EchoMeshError;
 
 pub const IDENTITY_FILE: &str = "identity.key";
+const IDENTITY_KEYRING_SERVICE: &str = "com.echomesh.client.identity";
 
 #[derive(Clone)]
 pub struct ClientIdentity {
@@ -39,24 +40,7 @@ impl ClientIdentity {
         std::fs::create_dir_all(storage_dir)
             .map_err(|e| EchoMeshError::StorageError(format!("identity directory: {e}")))?;
         let path = storage_dir.join(IDENTITY_FILE);
-
-        let secret = if path.exists() {
-            let raw = std::fs::read(&path)
-                .map_err(|e| EchoMeshError::StorageError(format!("read identity: {e}")))?;
-            if raw.len() != 32 {
-                return Err(EchoMeshError::StorageError(
-                    "identity key file has invalid length".to_string(),
-                ));
-            }
-            let mut out = [0u8; 32];
-            out.copy_from_slice(&raw);
-            out
-        } else {
-            let signing = SigningKey::generate(&mut OsRng);
-            let secret = signing.to_bytes();
-            write_private_file(&path, &secret)?;
-            secret
-        };
+        let secret = load_or_generate_secret(storage_dir, &path)?;
 
         let signing = SigningKey::from_bytes(&secret);
         let public = signing.verifying_key().to_bytes();
@@ -104,6 +88,120 @@ impl ClientIdentity {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn load_or_generate_secret(storage_dir: &Path, legacy_path: &Path) -> Result<[u8; 32], EchoMeshError> {
+    use keyring::v1::{Entry, Error as KeyringError};
+
+    // Preserve the old per-storage-directory identity semantics without exposing
+    // the directory itself in the credential store. Multiple EchoMesh profiles
+    // therefore continue to receive independent identities.
+    let profile_hash = Sha256::digest(storage_dir.to_string_lossy().as_bytes());
+    let username = format!("identity-{}", hex::encode(profile_hash));
+    let entry = Entry::new(IDENTITY_KEYRING_SERVICE, &username)
+        .map_err(|e| EchoMeshError::StorageError(format!("open OS identity store: {e}")))?;
+
+    match entry.get_secret() {
+        Ok(secret) => {
+            let stored = secret_from_slice(&secret, "OS identity store")?;
+            if legacy_path.exists() {
+                let legacy = std::fs::read(legacy_path)
+                    .map_err(|e| EchoMeshError::StorageError(format!("read legacy identity: {e}")))?;
+                let legacy_secret = secret_from_slice(&legacy, "legacy identity file")?;
+                if legacy_secret != stored {
+                    return Err(EchoMeshError::StorageError(
+                        "OS identity and legacy identity file disagree; refusing silent identity replacement"
+                            .to_string(),
+                    ));
+                }
+                scrub_then_remove_identity_file(legacy_path)?;
+            }
+            Ok(stored)
+        }
+        Err(KeyringError::NoEntry) => {
+            let secret = if legacy_path.exists() {
+                let raw = std::fs::read(legacy_path)
+                    .map_err(|e| EchoMeshError::StorageError(format!("read legacy identity: {e}")))?;
+                secret_from_slice(&raw, "legacy identity file")?
+            } else {
+                SigningKey::generate(&mut OsRng).to_bytes()
+            };
+
+            entry
+                .set_secret(&secret)
+                .map_err(|e| EchoMeshError::StorageError(format!("store identity in OS credential store: {e}")))?;
+            // Verify the credential before deleting the only existing legacy copy.
+            let verified = entry
+                .get_secret()
+                .map_err(|e| EchoMeshError::StorageError(format!("verify OS identity store: {e}")))?;
+            if secret_from_slice(&verified, "OS identity store verification")? != secret {
+                return Err(EchoMeshError::StorageError(
+                    "OS identity store verification returned different key material".to_string(),
+                ));
+            }
+            if legacy_path.exists() {
+                scrub_then_remove_identity_file(legacy_path)?;
+            }
+            Ok(secret)
+        }
+        Err(error) => Err(EchoMeshError::StorageError(format!(
+            "read identity from OS credential store: {error}"
+        ))),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn load_or_generate_secret(_storage_dir: &Path, path: &Path) -> Result<[u8; 32], EchoMeshError> {
+    if path.exists() {
+        let raw = std::fs::read(path)
+            .map_err(|e| EchoMeshError::StorageError(format!("read identity: {e}")))?;
+        secret_from_slice(&raw, "identity key file")
+    } else {
+        let secret = SigningKey::generate(&mut OsRng).to_bytes();
+        write_private_file(path, &secret)?;
+        Ok(secret)
+    }
+}
+
+fn secret_from_slice(raw: &[u8], source: &str) -> Result<[u8; 32], EchoMeshError> {
+    if raw.len() != 32 {
+        return Err(EchoMeshError::StorageError(format!(
+            "{source} has invalid identity key length: expected 32 bytes, got {}",
+            raw.len()
+        )));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(raw);
+    Ok(out)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn scrub_then_remove_identity_file(path: &Path) -> Result<(), EchoMeshError> {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let scrub_result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
+        let len = file.metadata()?.len();
+        file.seek(SeekFrom::Start(0))?;
+        let zeros = [0u8; 64];
+        let mut remaining = len;
+        while remaining > 0 {
+            let n = remaining.min(zeros.len() as u64) as usize;
+            file.write_all(&zeros[..n])?;
+            remaining -= n as u64;
+        }
+        file.sync_all()?;
+        Ok(())
+    })();
+
+    std::fs::remove_file(path)
+        .map_err(|e| EchoMeshError::StorageError(format!("remove legacy identity file: {e}")))?;
+    // On copy-on-write/flash filesystems overwriting historical blocks is not a
+    // cryptographic erasure guarantee. Removal is still required, and the new
+    // authoritative copy is protected by the platform credential store.
+    let _ = scrub_result;
+    Ok(())
+}
+
 pub fn route_id_from_peer_id(peer_id: &[u8; 32]) -> [u8; 16] {
     let digest = Sha256::digest(peer_id);
     let mut route = [0u8; 16];
@@ -133,6 +231,7 @@ pub fn ed25519_public_to_x25519(peer_id: &[u8; 32]) -> Result<X25519PublicKey, E
     Ok(X25519PublicKey::from(point.to_montgomery().to_bytes()))
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn write_private_file(path: &Path, data: &[u8]) -> Result<(), EchoMeshError> {
     #[cfg(unix)]
     {
