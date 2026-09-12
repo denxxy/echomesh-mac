@@ -5,7 +5,7 @@ use tokio::net::TcpListener;
 
 use echomesh_core::noise::{NOISE_PATTERN, NOISE_TAG_LEN};
 use echomesh_core::protocol::{Frame, FrameCodec, ECHO_SERVICE_PEER_ID, FRAME_SIZE};
-use echomesh_core::route::ROUTER_CONTROL_ID;
+use echomesh_core::route::{ROUTER_CONTROL_ID, ROUTE_REGISTER_MAGIC};
 use echomesh_core::{CoreEventsListener, DeliveryStatus, EchoMeshClient, EchoMeshError, MessageRecord, NetworkState};
 
 struct MockListener { packet_received: AtomicBool }
@@ -73,7 +73,7 @@ fn test_send_packet_and_echo_flow() {
 
             let registration = read_frame(&mut stream, &mut transport).await;
             assert_eq!(registration.session_id, ROUTER_CONTROL_ID);
-            assert_eq!(&registration.payload[..4], b"EMR1");
+            assert_eq!(&registration.payload[..4], ROUTE_REGISTER_MAGIC);
 
             let received_frame = read_frame(&mut stream, &mut transport).await;
             assert_eq!(&received_frame.payload[..], b"TEST_PAYLOAD");
