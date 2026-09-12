@@ -241,6 +241,7 @@ impl EchoMeshClient {
                                             tracing::error!("Failed flushing TCP stream: {:?}", e);
                                             break;
                                         }
+                                        tracing::info!("Sent 1420-byte frame to relay socket. Buffer flushed.");
                                     }
                                     Err(e) => {
                                         tracing::error!("Failed encrypting frame: {:?}", e);

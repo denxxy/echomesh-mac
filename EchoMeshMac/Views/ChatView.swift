@@ -19,7 +19,7 @@ public struct ChatView: View {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
-                        Text("Echo Relay (Tokyo Node)")
+                        Text("Echo Relay Node")
                             .font(.system(size: 15, weight: .bold))
 
                         // Protocol Badge
