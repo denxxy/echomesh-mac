@@ -7,8 +7,8 @@ use crate::protocol::Frame;
 pub type RouteId = [u8; 16];
 
 pub const ROUTER_CONTROL_ID: RouteId = [0xEC; 16];
-pub const ROUTE_REGISTER_MAGIC: &[u8; 4] = b"EMR1";
-pub const ROUTE_REGISTERED_MAGIC: &[u8; 4] = b"EMA1";
+pub const ROUTE_REGISTER_MAGIC: &[u8; 4] = b"EMR2";
+pub const ROUTE_REGISTERED_MAGIC: &[u8; 4] = b"EMA2";
 pub const ROUTE_REGISTRATION_CONTEXT: &[u8] = b"EchoMesh route registration v2";
 
 pub fn peer_route_id(peer_id: &[u8; 32]) -> RouteId {
@@ -55,7 +55,7 @@ mod tests {
         let identity = ClientIdentity::from_secret([0xA5; 32]);
         let frame = registration_frame(&identity);
         assert_eq!(frame.session_id, ROUTER_CONTROL_ID);
-        assert_eq!(&frame.payload[..4], b"EMR1");
+        assert_eq!(&frame.payload[..4], b"EMR2");
         assert_eq!(&frame.payload[4..20], &identity.route_id());
         assert_eq!(&frame.payload[20..52], &identity.public_key());
         assert_eq!(frame.payload.len(), 116);
