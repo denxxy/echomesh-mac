@@ -149,6 +149,23 @@ impl EchoMeshClient {
                 actual: relay_public_key.len() as u32,
             });
         }
+        let token_value = secret_token_hex
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                EchoMeshError::ConnectionError(
+                    "relay secret token is required; no built-in production credential is used"
+                        .to_string(),
+                )
+            })?;
+        let token = hex::decode(token_value).unwrap_or_else(|_| token_value.as_bytes().to_vec());
+        if token.is_empty() {
+            return Err(EchoMeshError::ConnectionError(
+                "relay secret token is empty".to_string(),
+            ));
+        }
+
         let server_static_key: [u8; 32] = relay_public_key.as_slice().try_into().unwrap();
         let clean_addr = relay_address
             .trim_start_matches("https://")
@@ -183,11 +200,6 @@ impl EchoMeshClient {
                 }
             };
 
-            let token = match secret_token_hex.as_deref() {
-                Some(value) if !value.trim().is_empty() => hex::decode(value.trim())
-                    .unwrap_or_else(|_| value.trim().as_bytes().to_vec()),
-                _ => crate::transport::DEFAULT_SECRET_TOKEN.to_vec(),
-            };
             let hello = crate::transport::PseudoTlsBuilder::new(token, "cloudflare.com").build();
             tcp_stream
                 .write_all(&hello)
