@@ -5,15 +5,19 @@
     <!-- App Sandbox -->
     <key>com.apple.security.app-sandbox</key>
     <true/>
-    
-    <!-- Outbound network connections (Relay TCP/UDP) -->
+
+    <!-- Outbound network connections (relay and LAN peers) -->
     <key>com.apple.security.network.client</key>
     <true/>
-    
-    <!-- Inbound network connections (Local peer discovery / BLE mesh) -->
+
+    <!-- Inbound network connections (LAN peer transport) -->
     <key>com.apple.security.network.server</key>
     <true/>
-    
+
+    <!-- CoreBluetooth central/peripheral access while sandboxed -->
+    <key>com.apple.security.device.bluetooth</key>
+    <true/>
+
     <!-- Keychain Access Groups for secure key storage -->
     <key>keychain-access-groups</key>
     <array>
