@@ -1,7 +1,7 @@
 use bytes::BytesMut;
-use echomesh_core::identity::route_id_from_peer_id;
+use echomesh_core::identity::{route_id_from_peer_id, ClientIdentity};
 use echomesh_core::protocol::{Frame, FrameCodec, FRAME_SIZE};
-use echomesh_core::route::{registration_frame, ROUTER_CONTROL_ID};
+use echomesh_core::route::{registration_frame, ROUTER_CONTROL_ID, ROUTE_REGISTER_MAGIC};
 use echomesh_core::transport::{decode_direct_packet, encode_direct_packet};
 use tokio_util::codec::Encoder;
 
@@ -24,10 +24,14 @@ fn fixed_frame_vector_v1() {
 }
 
 #[test]
-fn relay_registration_vector_v1() {
-    let frame = registration_frame([0xA5; 16]);
+fn relay_registration_vector_v2() {
+    let identity = ClientIdentity::from_secret([0xA5; 32]);
+    let frame = registration_frame(&identity);
     assert_eq!(frame.session_id, ROUTER_CONTROL_ID);
-    assert_eq!(hex::encode(frame.payload), "454d5231a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5");
+    assert_eq!(&frame.payload[..4], ROUTE_REGISTER_MAGIC);
+    assert_eq!(&frame.payload[4..20], &identity.route_id());
+    assert_eq!(&frame.payload[20..52], &identity.public_key());
+    assert_eq!(frame.payload.len(), 116);
 }
 
 #[test]
