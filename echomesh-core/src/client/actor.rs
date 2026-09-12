@@ -23,7 +23,7 @@ pub async fn register_relay_route(
     session: &mut NoiseSession,
     identity: &ClientIdentity,
 ) -> Result<(), EchoMeshError> {
-    let frame = registration_frame(identity.route_id());
+    let frame = registration_frame(identity);
     let packet = session.encrypt_frame(&frame)?;
     stream.write_all(&packet).await.map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
     stream.flush().await.map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
@@ -110,9 +110,6 @@ fn handle_incoming_frame(
     listener: &Arc<dyn CoreEventsListener>,
     frame: Frame,
 ) -> Result<(), EchoMeshError> {
-    // Router control traffic has a reserved route and must never be fed into the
-    // client-to-client E2EE decoder. This also keeps old echo-style test relays
-    // compatible: an echoed EMR1 registration is harmlessly ignored.
     if frame.session_id == ROUTER_CONTROL_ID {
         if let Some(route) = registration_ack_route(&frame) {
             if route == identity.route_id() {
@@ -178,11 +175,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_echoed_route_registration_is_ignored() {
+    fn echoed_route_registration_is_ignored() {
         let identity = ClientIdentity::from_secret([7u8; 32]);
         let storage = StorageManager::new_in_memory().unwrap();
         let listener: Arc<dyn CoreEventsListener> = Arc::new(Sink);
-        let frame = registration_frame(identity.route_id());
+        let frame = registration_frame(&identity);
         handle_incoming_frame(&identity, &storage, &listener, frame).unwrap();
     }
 }
