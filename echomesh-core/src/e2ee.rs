@@ -90,6 +90,25 @@ pub fn decrypt_from_peer(
     outer_sender_route: RouteId,
     envelope: &[u8],
 ) -> Result<DecryptedEnvelope, EchoMeshError> {
+    decrypt_envelope(identity, Some(outer_sender_route), envelope)
+}
+
+/// Decrypts an E2EE envelope received over an authenticated direct bearer such
+/// as LAN or BLE. Direct transports do not have a relay-supplied outer route,
+/// so sender authenticity is established by the signed Ed25519 identity inside
+/// the envelope itself.
+pub fn decrypt_direct(
+    identity: &ClientIdentity,
+    envelope: &[u8],
+) -> Result<DecryptedEnvelope, EchoMeshError> {
+    decrypt_envelope(identity, None, envelope)
+}
+
+fn decrypt_envelope(
+    identity: &ClientIdentity,
+    expected_sender_route: Option<RouteId>,
+    envelope: &[u8],
+) -> Result<DecryptedEnvelope, EchoMeshError> {
     if envelope.len() < E2EE_OVERHEAD || &envelope[..4] != E2EE_MAGIC {
         return Err(EchoMeshError::CryptoError("invalid E2EE envelope".to_string()));
     }
@@ -114,10 +133,12 @@ pub fn decrypt_from_peer(
             "E2EE envelope addressed to another peer".to_string(),
         ));
     }
-    if peer_route_id(&sender_peer_id) != outer_sender_route {
-        return Err(EchoMeshError::CryptoError(
-            "relay sender route does not match signed sender identity".to_string(),
-        ));
+    if let Some(expected_route) = expected_sender_route {
+        if peer_route_id(&sender_peer_id) != expected_route {
+            return Err(EchoMeshError::CryptoError(
+                "relay sender route does not match signed sender identity".to_string(),
+            ));
+        }
     }
 
     let signed_len = E2EE_HEADER_LEN + ciphertext_len;
@@ -189,6 +210,16 @@ mod tests {
     }
 
     #[test]
+    fn direct_round_trip_uses_signed_sender_identity() {
+        let alice = ClientIdentity::from_secret([1u8; 32]);
+        let bob = ClientIdentity::from_secret([2u8; 32]);
+        let encrypted = encrypt_for_peer(&alice, &bob.public_key(), b"direct hello").unwrap();
+        let decrypted = decrypt_direct(&bob, &encrypted).unwrap();
+        assert_eq!(decrypted.sender_peer_id, alice.public_key());
+        assert_eq!(decrypted.plaintext, b"direct hello");
+    }
+
+    #[test]
     fn rejects_relay_sender_route_substitution() {
         let alice = ClientIdentity::from_secret([1u8; 32]);
         let bob = ClientIdentity::from_secret([2u8; 32]);
@@ -203,7 +234,7 @@ mod tests {
         let bob = ClientIdentity::from_secret([2u8; 32]);
         let mut encrypted = encrypt_for_peer(&alice, &bob.public_key(), b"secret").unwrap();
         encrypted[E2EE_HEADER_LEN] ^= 0x01;
-        assert!(decrypt_from_peer(&bob, alice.route_id(), &encrypted).is_err());
+        assert!(decrypt_direct(&bob, &encrypted).is_err());
     }
 
     #[test]
@@ -212,7 +243,7 @@ mod tests {
         let bob = ClientIdentity::from_secret([2u8; 32]);
         let carol = ClientIdentity::from_secret([4u8; 32]);
         let encrypted = encrypt_for_peer(&alice, &bob.public_key(), b"secret").unwrap();
-        assert!(decrypt_from_peer(&carol, alice.route_id(), &encrypted).is_err());
+        assert!(decrypt_direct(&carol, &encrypted).is_err());
     }
 
     #[test]
