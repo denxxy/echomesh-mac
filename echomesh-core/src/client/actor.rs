@@ -14,7 +14,7 @@ use crate::identity::ClientIdentity;
 use crate::model::MessageRecord;
 use crate::noise::{NoiseSession, ENCRYPTED_FRAME_SIZE};
 use crate::protocol::{Frame, ECHO_SERVICE_PEER_ID};
-use crate::route::{peer_route_id, registration_ack_route, registration_frame};
+use crate::route::{peer_route_id, registration_ack_route, registration_frame, ROUTER_CONTROL_ID};
 use crate::storage::StorageManager;
 use crate::{CoreEventsListener, EchoMeshError};
 
@@ -25,22 +25,13 @@ pub async fn register_relay_route(
 ) -> Result<(), EchoMeshError> {
     let frame = registration_frame(identity.route_id());
     let packet = session.encrypt_frame(&frame)?;
-    stream
-        .write_all(&packet)
-        .await
-        .map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
-    stream
-        .flush()
-        .await
-        .map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
+    stream.write_all(&packet).await.map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
+    stream.flush().await.map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
     Ok(())
 }
 
 /// Single owner of an established relay socket and Noise state.
-///
-/// There are no separate inbound/outbound Noise mutex workers: the actor
-/// serializes access to the cipher state while `tokio::select!` multiplexes
-/// socket reads, application sends and shutdown.
+/// Cipher state is never shared between independent reader/writer workers.
 pub async fn run_relay_actor(
     tcp_stream: TcpStream,
     mut session: NoiseSession,
@@ -51,7 +42,6 @@ pub async fn run_relay_actor(
     mut shutdown_rx: broadcast::Receiver<()>,
 ) -> Result<(), EchoMeshError> {
     let (mut reader, mut writer) = tcp_stream.into_split();
-
     loop {
         tokio::select! {
             incoming = read_noise_packet(&mut reader) => {
@@ -69,7 +59,6 @@ pub async fn run_relay_actor(
             }
         }
     }
-
     Ok(())
 }
 
@@ -80,15 +69,10 @@ async fn read_noise_packet(reader: &mut OwnedReadHalf) -> Result<Option<Vec<u8>>
         Err(err) => return Err(EchoMeshError::ConnectionError(err.to_string())),
     };
     if len == 0 || len > ENCRYPTED_FRAME_SIZE {
-        return Err(EchoMeshError::ConnectionError(
-            "invalid encrypted relay frame length".to_string(),
-        ));
+        return Err(EchoMeshError::ConnectionError("invalid encrypted relay frame length".to_string()));
     }
     let mut ciphertext = vec![0u8; len];
-    reader
-        .read_exact(&mut ciphertext)
-        .await
-        .map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
+    reader.read_exact(&mut ciphertext).await.map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
     Ok(Some(ciphertext))
 }
 
@@ -100,37 +84,23 @@ async fn send_outbound_packet(
 ) -> Result<(), EchoMeshError> {
     let mut nonce = [0u8; 8];
     rand::rngs::OsRng.fill_bytes(&mut nonce);
-
-    let frame = if packet.recipient == ECHO_SERVICE_PEER_ID {
-        Frame::new(
-            ECHO_SERVICE_PEER_ID[..16].try_into().expect("16-byte echo route"),
-            nonce,
-            bytes::Bytes::from(packet.data),
-        )
-        .map_err(|e| EchoMeshError::ConnectionError(format!("frame encoding: {e}")))?
+    let frame = if packet.recipient.as_slice() == &ECHO_SERVICE_PEER_ID[..] {
+        let mut route = [0u8; 16];
+        route.copy_from_slice(&ECHO_SERVICE_PEER_ID[..16]);
+        Frame::new(route, nonce, bytes::Bytes::from(packet.data))
+            .map_err(|e| EchoMeshError::ConnectionError(format!("frame encoding: {e}")))?
     } else {
-        let recipient: [u8; 32] = packet
-            .recipient
-            .as_slice()
-            .try_into()
-            .map_err(|_| EchoMeshError::InvalidKeyLength {
-                expected: 32,
-                actual: packet.recipient.len() as u32,
-            })?;
+        let recipient: [u8; 32] = packet.recipient.as_slice().try_into().map_err(|_| EchoMeshError::InvalidKeyLength {
+            expected: 32,
+            actual: packet.recipient.len() as u32,
+        })?;
         let encrypted = encrypt_for_peer(identity, &recipient, &packet.data)?;
         Frame::new(peer_route_id(&recipient), nonce, bytes::Bytes::from(encrypted))
             .map_err(|e| EchoMeshError::ConnectionError(format!("frame encoding: {e}")))?
     };
-
     let wire = session.encrypt_frame(&frame)?;
-    writer
-        .write_all(&wire)
-        .await
-        .map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
-    writer
-        .flush()
-        .await
-        .map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
+    writer.write_all(&wire).await.map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
+    writer.flush().await.map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
     Ok(())
 }
 
@@ -140,11 +110,18 @@ fn handle_incoming_frame(
     listener: &Arc<dyn CoreEventsListener>,
     frame: Frame,
 ) -> Result<(), EchoMeshError> {
-    if let Some(route) = registration_ack_route(&frame) {
-        if route == identity.route_id() {
-            debug!("relay route registration acknowledged");
+    // Router control traffic has a reserved route and must never be fed into the
+    // client-to-client E2EE decoder. This also keeps old echo-style test relays
+    // compatible: an echoed EMR1 registration is harmlessly ignored.
+    if frame.session_id == ROUTER_CONTROL_ID {
+        if let Some(route) = registration_ack_route(&frame) {
+            if route == identity.route_id() {
+                debug!("relay route registration acknowledged");
+            } else {
+                warn!("relay returned a mismatched route acknowledgement");
+            }
         } else {
-            warn!("relay returned a mismatched route acknowledgement");
+            debug!("ignoring unsupported relay control frame");
         }
         return Ok(());
     }
@@ -156,12 +133,8 @@ fn handle_incoming_frame(
         (decrypted.sender_peer_id, decrypted.plaintext)
     };
 
-    let text = String::from_utf8(plaintext.clone())
-        .unwrap_or_else(|_| "[binary encrypted message]".to_string());
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
+    let text = String::from_utf8(plaintext.clone()).unwrap_or_else(|_| "[binary encrypted message]".to_string());
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
     let message = MessageRecord {
         id: format!("msg_{}_{}", now, rand::random::<u16>()),
         conversation_peer_id: sender_peer_id.to_vec(),
@@ -202,5 +175,14 @@ mod tests {
         let messages = storage.get_messages(&alice.public_key(), 10, 0).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].text, "hello");
+    }
+
+    #[test]
+    fn legacy_echoed_route_registration_is_ignored() {
+        let identity = ClientIdentity::from_secret([7u8; 32]);
+        let storage = StorageManager::new_in_memory().unwrap();
+        let listener: Arc<dyn CoreEventsListener> = Arc::new(Sink);
+        let frame = registration_frame(identity.route_id());
+        handle_incoming_frame(&identity, &storage, &listener, frame).unwrap();
     }
 }
