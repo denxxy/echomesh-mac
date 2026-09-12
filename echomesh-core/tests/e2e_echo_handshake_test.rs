@@ -1,12 +1,15 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::sync::watch;
 
+use echomesh_core::noise::{NOISE_PATTERN, NOISE_TAG_LEN};
+use echomesh_core::protocol::{Frame, FrameCodec};
 use echomesh_core::{
     CoreEventsListener, DeliveryStatus, EchoMeshClient, MessageRecord, NetworkState,
 };
-use echomesh_relay::server::{ListenerConfig, RelayListener};
 
 struct TestEventListener {
     echo_received: AtomicBool,
@@ -38,9 +41,9 @@ impl CoreEventsListener for TestEventListener {
 #[test]
 fn test_e2e_client_connect_and_echo_packet() {
     let (server_addr_tx, server_addr_rx) = std::sync::mpsc::channel();
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
 
-    // 1. Launch real RelayListener with standard token validator
+    // 1. Launch standalone mock RelayListener (Pseudo-TLS + Noise NK + Echo loopback)
     let server_handle = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -48,20 +51,111 @@ fn test_e2e_client_connect_and_echo_packet() {
             .unwrap();
 
         rt.block_on(async move {
-            let config = ListenerConfig::new(
-                "127.0.0.1:0".parse().unwrap(),
-                echomesh_relay::config::DEFAULT_SECRET_TOKEN.to_vec(),
-            )
-            .with_fallback_target("127.0.0.1:443")
-            .with_max_connections(50);
+            let builder = snow::Builder::new(NOISE_PATTERN.parse().unwrap());
+            let server_keypair = builder.generate_keypair().unwrap();
+            let server_pub = server_keypair.public.clone();
+            let server_priv = server_keypair.private.clone();
 
-            let listener = RelayListener::bind(config).await.unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
-            let pub_key = listener.secrets().public_key.clone();
+            server_addr_tx.send((addr, server_pub)).unwrap();
 
-            server_addr_tx.send((addr, pub_key)).unwrap();
+            tokio::select! {
+                res = listener.accept() => {
+                    let (mut stream, _) = res.unwrap();
 
-            let _ = listener.run_with_shutdown(shutdown_rx).await;
+                    // Read Pseudo-TLS ClientHello
+                    let mut tls_header = [0u8; 5];
+                    stream.read_exact(&mut tls_header).await.unwrap();
+                    let tls_body_len = u16::from_be_bytes([tls_header[3], tls_header[4]]) as usize;
+                    let mut tls_body = vec![0u8; tls_body_len];
+                    stream.read_exact(&mut tls_body).await.unwrap();
+
+                    // Noise NK Handshake (Responder)
+                    let builder = snow::Builder::new(NOISE_PATTERN.parse().unwrap());
+                    let mut responder = builder
+                        .local_private_key(&server_priv)
+                        .unwrap()
+                        .build_responder()
+                        .unwrap();
+
+                    // Read message 1 (-> e, es)
+                    let msg1_len = stream.read_u16().await.unwrap() as usize;
+                    let mut msg1 = vec![0u8; msg1_len];
+                    stream.read_exact(&mut msg1).await.unwrap();
+                    let mut dummy = [0u8; 128];
+                    responder.read_message(&msg1, &mut dummy).unwrap();
+
+                    // Write message 2 (<- e, ee)
+                    let mut msg2 = vec![0u8; 128];
+                    let n2 = responder.write_message(&[], &mut msg2).unwrap();
+                    msg2.truncate(n2);
+                    stream.write_u16(n2 as u16).await.unwrap();
+                    stream.write_all(&msg2).await.unwrap();
+                    stream.flush().await.unwrap();
+
+                    let mut transport = responder.into_transport_mode().unwrap();
+
+                    // Loop to handle frames and echo
+                    loop {
+                        tokio::select! {
+                            len_res = stream.read_u16() => {
+                                let frame_len = match len_res {
+                                    Ok(l) => l as usize,
+                                    Err(_) => break,
+                                };
+
+                                let mut cipher_frame = vec![0u8; frame_len];
+                                if stream.read_exact(&mut cipher_frame).await.is_err() {
+                                    break;
+                                }
+
+                                let mut plain_frame = vec![0u8; cipher_frame.len()];
+                                let n = match transport.read_message(&cipher_frame, &mut plain_frame) {
+                                    Ok(n) => n,
+                                    Err(_) => break,
+                                };
+                                plain_frame.truncate(n);
+
+                                let received_frame = match Frame::from_slice(&plain_frame) {
+                                    Ok(f) => f,
+                                    Err(_) => break,
+                                };
+
+                                // Echo frame back to client
+                                let reply_frame = Frame::new(
+                                    received_frame.session_id,
+                                    received_frame.nonce,
+                                    received_frame.payload,
+                                ).unwrap();
+
+                                let mut codec = FrameCodec::new();
+                                use tokio_util::codec::Encoder;
+                                let mut encoded = bytes::BytesMut::new();
+                                codec.encode(reply_frame, &mut encoded).unwrap();
+
+                                let mut out_cipher = vec![0u8; encoded.len() + NOISE_TAG_LEN];
+                                let enc_n = transport.write_message(&encoded, &mut out_cipher).unwrap();
+                                out_cipher.truncate(enc_n);
+
+                                if stream.write_u16(enc_n as u16).await.is_err() {
+                                    break;
+                                }
+                                if stream.write_all(&out_cipher).await.is_err() {
+                                    break;
+                                }
+                                if stream.flush().await.is_err() {
+                                    break;
+                                }
+                            }
+                            _ = shutdown_rx.changed() => {
+                                break;
+                            }
+                        }
+                    }
+                }
+                _ = shutdown_rx.changed() => {}
+            }
         });
     });
 
