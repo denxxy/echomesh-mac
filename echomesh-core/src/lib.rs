@@ -1,14 +1,18 @@
 pub mod api;
 pub mod client;
 pub mod crypto;
+pub mod e2ee;
+pub mod identity;
 pub mod model;
 pub mod noise;
 pub mod protocol;
+pub mod route;
 pub mod storage;
 pub mod transport;
 
 pub use api::EchoMeshClient;
 pub use crypto::IdentityKeyPair;
+pub use identity::ClientIdentity;
 pub use model::{Contact, ConversationSummary, MessageRecord, PeerId};
 pub use noise::{client_noise_handshake, NoiseFramedStream, NoiseSession};
 pub use protocol::{Frame, FrameCodec, FRAME_SIZE, MAX_PAYLOAD_SIZE};
@@ -31,6 +35,9 @@ pub enum EchoMeshError {
     #[error("Noise cryptographic error during handshake: {0}")]
     NoiseError(String),
 
+    #[error("End-to-end cryptographic error: {0}")]
+    CryptoError(String),
+
     #[error("Relay connection error: {0}")]
     ConnectionError(String),
 
@@ -49,6 +56,7 @@ pub enum NetworkState {
     Offline,
     Connecting,
     ConnectedRealityRelay,
+    ConnectedLan,
     ConnectedBleMeshFallback,
 }
 
