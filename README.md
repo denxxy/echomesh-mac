@@ -81,6 +81,14 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --package-pa
 
 ---
 
+## Documentation in Russian
+
+- [Инструкция по установке и сборке на русском языке (INSTALL_RU.md)](INSTALL_RU.md)
+
+---
+
 ## Related Projects
 
+- [echomesh-windows](https://github.com/denxxy/echomesh-windows) — Native Windows client (Tauri v2 + Fluent UI + echomesh-core).
 - [echomesh-relay](https://github.com/denxxy/echomesh-relay) — High-throughput, zero-knowledge, DPI-resistant relay proxy.
+
