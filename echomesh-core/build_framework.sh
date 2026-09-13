@@ -4,12 +4,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "=== 1. Building echomesh-core release binaries ==="
-cargo build --release
+CORE_FEATURES="native-ble"
+
+echo "=== 1. Building echomesh-core release binaries with native BLE ==="
+cargo build --release --features "$CORE_FEATURES"
 
 echo "=== 2. Generating UniFFI Swift bindings & C headers ==="
 mkdir -p bindings
-cargo run --bin uniffi-bindgen generate --library target/release/libechomesh_core.dylib --language swift --out-dir bindings
+cargo run --features "$CORE_FEATURES" --bin uniffi-bindgen generate --library target/release/libechomesh_core.dylib --language swift --out-dir bindings
 
 echo "=== 3. Organizing headers and modulemap ==="
 mkdir -p bindings/headers

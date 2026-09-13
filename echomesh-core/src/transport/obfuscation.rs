@@ -1,64 +1,37 @@
 use bytes::{BufMut, BytesMut};
+use hmac::{Hmac, Mac};
 use rand::RngCore;
+use sha2::Sha256;
 
-/// TLS Content Type for Handshake records.
 pub const TLS_HANDSHAKE_CONTENT_TYPE: u8 = 0x16;
-
-/// TLS Handshake Type for ClientHello.
 pub const TLS_CLIENT_HELLO_HANDSHAKE_TYPE: u8 = 0x01;
-
-/// Legacy TLS record version commonly sent in TLS 1.3 ClientHello (TLS 1.0 = 0x0301).
 pub const TLS_LEGACY_RECORD_VERSION: u16 = 0x0301;
-
-/// Legacy ClientHello version (TLS 1.2 = 0x0303).
 pub const TLS_LEGACY_CLIENT_VERSION: u16 = 0x0303;
-
-/// TLS 1.3 version identifier (0x0304).
 pub const TLS_1_3_VERSION: u16 = 0x0304;
-
-/// TLS Extension Type: Server Name Indication (SNI).
 pub const TLS_EXT_SERVER_NAME: u16 = 0x0000;
-
-/// TLS Extension Type: Supported Groups.
 pub const TLS_EXT_SUPPORTED_GROUPS: u16 = 0x000a;
-
-/// TLS Extension Type: Signature Algorithms.
 pub const TLS_EXT_SIGNATURE_ALGORITHMS: u16 = 0x000d;
-
-/// TLS Extension Type: Supported Versions.
 pub const TLS_EXT_SUPPORTED_VERSIONS: u16 = 0x002b;
-
-/// TLS Extension Type: Key Share.
 pub const TLS_EXT_KEY_SHARE: u16 = 0x0033;
-
-/// Standard TLS 1.3 Cipher Suites
 pub const TLS_AES_128_GCM_SHA256: u16 = 0x1301;
 pub const TLS_AES_256_GCM_SHA384: u16 = 0x1302;
 pub const TLS_CHACHA20_POLY1305_SHA256: u16 = 0x1303;
 
-/// Default authorization secret token for Reality/Pseudo-TLS camouflage.
-pub const DEFAULT_SECRET_TOKEN: &[u8] = b"echomesh_secret_mesh_token_2026";
+pub const DEFAULT_SECRET_TOKEN: &[u8] = &[];
+const COVER_AUTH_CONTEXT: &[u8] = b"EchoMesh pseudo-TLS auth v1";
+type HmacSha256 = Hmac<Sha256>;
 
-/// Builder for generating authentic TLS 1.3 ClientHello messages (Pseudo-TLS Handshake)
-/// with embedded secret tokens to bypass DPI inspection.
 pub struct PseudoTlsBuilder {
     secret_token: Vec<u8>,
     sni_host: String,
-    token_in_sni: bool,
     cipher_suites: Vec<u16>,
 }
 
 impl PseudoTlsBuilder {
-    /// Creates a new builder with the given secret token and SNI disguise host (e.g. "cloudflare.com").
     pub fn new(secret_token: impl Into<Vec<u8>>, sni_host: impl Into<String>) -> Self {
-        let mut token = secret_token.into();
-        if token.is_empty() {
-            token = DEFAULT_SECRET_TOKEN.to_vec();
-        }
         Self {
-            secret_token: token,
-            sni_host: sni_host.into(),
-            token_in_sni: false,
+            secret_token: secret_token.into(),
+            sni_host: sni_host.into().to_ascii_lowercase(),
             cipher_suites: vec![
                 TLS_AES_128_GCM_SHA256,
                 TLS_AES_256_GCM_SHA384,
@@ -67,129 +40,87 @@ impl PseudoTlsBuilder {
         }
     }
 
-    /// Configure embedding secret token into the SNI host (e.g. "<hex_token>.cloudflare.com").
-    pub fn embed_in_sni(mut self, enabled: bool) -> Self {
-        self.token_in_sni = enabled;
+    /// Retained for source compatibility. Secret-in-SNI mode is intentionally
+    /// disabled; enabling this no longer changes the safe HMAC proof format.
+    pub fn embed_in_sni(self, _enabled: bool) -> Self {
         self
     }
 
-    /// Builds the complete binary TLS 1.3 ClientHello record ready for transmission over TCP.
     pub fn build(&self) -> Vec<u8> {
         let mut random = [0u8; 32];
-        let secret_token = if self.secret_token.is_empty() {
-            DEFAULT_SECRET_TOKEN
-        } else {
-            &self.secret_token[..]
-        };
+        rand::thread_rng().fill_bytes(&mut random);
 
-        // Embed token in random if token_in_sni is false
-        if !self.token_in_sni {
-            let copy_len = secret_token.len().min(32);
-            random[..copy_len].copy_from_slice(&secret_token[..copy_len]);
-            // Оставшиеся байты (если токен короче 32 байт) заполняются CSPRNG
-            if copy_len < 32 {
-                rand::thread_rng().fill_bytes(&mut random[copy_len..]);
-            }
-        } else {
-            rand::thread_rng().fill_bytes(&mut random);
-        }
-
-        let sni_string = if self.token_in_sni {
-            let hex_token = hex::encode(&self.secret_token);
-            format!("{}.{}", hex_token, self.sni_host)
-        } else {
-            self.sni_host.clone()
-        };
+        let mut mac = HmacSha256::new_from_slice(&self.secret_token)
+            .expect("HMAC accepts arbitrary key lengths");
+        mac.update(COVER_AUTH_CONTEXT);
+        mac.update(&random);
+        mac.update(self.sni_host.as_bytes());
+        let auth_tag = mac.finalize().into_bytes();
 
         let mut hs_body = BytesMut::with_capacity(512);
-
-        // legacy_version = 0x0303
         hs_body.put_u16(TLS_LEGACY_CLIENT_VERSION);
-
-        // random (32 bytes)
         hs_body.put_slice(&random);
-
-        // legacy_session_id (32 bytes middlebox compat)
         hs_body.put_u8(32);
-        hs_body.put_bytes(0x22, 32);
-
-        // cipher_suites
+        hs_body.put_slice(&auth_tag);
         hs_body.put_u16((self.cipher_suites.len() * 2) as u16);
-        for cs in &self.cipher_suites {
-            hs_body.put_u16(*cs);
+        for suite in &self.cipher_suites {
+            hs_body.put_u16(*suite);
         }
-
-        // legacy_compression_methods (1 byte len, 0x00)
         hs_body.put_u8(1);
         hs_body.put_u8(0);
 
-        // Build extensions
-        let mut ext_buf = BytesMut::with_capacity(256);
-
-        // 1. SNI extension (0x0000)
-        let sni_bytes = sni_string.as_bytes();
+        let mut extensions = BytesMut::with_capacity(256);
+        let sni_bytes = self.sni_host.as_bytes();
         let sni_list_len = 1 + 2 + sni_bytes.len();
-        let sni_ext_len = 2 + sni_list_len;
-        ext_buf.put_u16(TLS_EXT_SERVER_NAME);
-        ext_buf.put_u16(sni_ext_len as u16);
-        ext_buf.put_u16(sni_list_len as u16);
-        ext_buf.put_u8(0); // host_name type
-        ext_buf.put_u16(sni_bytes.len() as u16);
-        ext_buf.put_slice(sni_bytes);
+        extensions.put_u16(TLS_EXT_SERVER_NAME);
+        extensions.put_u16((2 + sni_list_len) as u16);
+        extensions.put_u16(sni_list_len as u16);
+        extensions.put_u8(0);
+        extensions.put_u16(sni_bytes.len() as u16);
+        extensions.put_slice(sni_bytes);
 
-        // 2. Supported Versions extension (0x002b) -> TLS 1.3 (0x0304) and TLS 1.2 (0x0303)
-        ext_buf.put_u16(TLS_EXT_SUPPORTED_VERSIONS);
-        ext_buf.put_u16(5); // ext len: 1 byte list len + 4 bytes versions
-        ext_buf.put_u8(4); // 2 versions = 4 bytes
-        ext_buf.put_u16(TLS_1_3_VERSION);
-        ext_buf.put_u16(TLS_LEGACY_CLIENT_VERSION);
+        extensions.put_u16(TLS_EXT_SUPPORTED_VERSIONS);
+        extensions.put_u16(5);
+        extensions.put_u8(4);
+        extensions.put_u16(TLS_1_3_VERSION);
+        extensions.put_u16(TLS_LEGACY_CLIENT_VERSION);
 
-        // 3. Supported Groups extension (0x000a) -> x25519 (0x001d), secp256r1 (0x0017)
-        ext_buf.put_u16(TLS_EXT_SUPPORTED_GROUPS);
-        ext_buf.put_u16(6);
-        ext_buf.put_u16(4);
-        ext_buf.put_u16(0x001d); // x25519
-        ext_buf.put_u16(0x0017); // secp256r1
+        extensions.put_u16(TLS_EXT_SUPPORTED_GROUPS);
+        extensions.put_u16(6);
+        extensions.put_u16(4);
+        extensions.put_u16(0x001d);
+        extensions.put_u16(0x0017);
 
-        // 4. Signature Algorithms extension (0x000d)
-        ext_buf.put_u16(TLS_EXT_SIGNATURE_ALGORITHMS);
-        ext_buf.put_u16(8);
-        ext_buf.put_u16(6);
-        ext_buf.put_u16(0x0403); // ecdsa_secp256r1_sha256
-        ext_buf.put_u16(0x0804); // rsa_pss_rsae_sha256
-        ext_buf.put_u16(0x0807); // ed25519
+        extensions.put_u16(TLS_EXT_SIGNATURE_ALGORITHMS);
+        extensions.put_u16(8);
+        extensions.put_u16(6);
+        extensions.put_u16(0x0403);
+        extensions.put_u16(0x0804);
+        extensions.put_u16(0x0807);
 
-        // 5. Key Share extension (0x0033) -> dummy x25519 public key (32 bytes)
-        ext_buf.put_u16(TLS_EXT_KEY_SHARE);
-        ext_buf.put_u16(2 + 2 + 2 + 32); // 38 bytes
-        ext_buf.put_u16(2 + 2 + 32); // client_shares_len: 36 bytes
-        ext_buf.put_u16(0x001d); // x25519 group
-        ext_buf.put_u16(32); // key_exchange_len
-        ext_buf.put_bytes(0x42, 32); // dummy public key share
+        let mut key_share = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut key_share);
+        extensions.put_u16(TLS_EXT_KEY_SHARE);
+        extensions.put_u16(38);
+        extensions.put_u16(36);
+        extensions.put_u16(0x001d);
+        extensions.put_u16(32);
+        extensions.put_slice(&key_share);
 
-        // Put extensions into hs_body
-        hs_body.put_u16(ext_buf.len() as u16);
-        hs_body.put_slice(&ext_buf);
+        hs_body.put_u16(extensions.len() as u16);
+        hs_body.put_slice(&extensions);
 
-        // Wrap Handshake message in TLS Record:
         let hs_len = hs_body.len();
         let total_record_len = 4 + hs_len;
-
         let mut record = Vec::with_capacity(5 + total_record_len);
-        // Record header (5 bytes)
         record.push(TLS_HANDSHAKE_CONTENT_TYPE);
         record.extend_from_slice(&TLS_LEGACY_RECORD_VERSION.to_be_bytes());
         record.extend_from_slice(&(total_record_len as u16).to_be_bytes());
-
-        // Handshake header (4 bytes: 1 byte type + 3 bytes length)
         record.push(TLS_CLIENT_HELLO_HANDSHAKE_TYPE);
-        record.push(((hs_len >> 16) & 0xFF) as u8);
-        record.push(((hs_len >> 8) & 0xFF) as u8);
-        record.push((hs_len & 0xFF) as u8);
-
-        // Handshake body
+        record.push(((hs_len >> 16) & 0xff) as u8);
+        record.push(((hs_len >> 8) & 0xff) as u8);
+        record.push((hs_len & 0xff) as u8);
         record.extend_from_slice(&hs_body);
-
         record
     }
 }
@@ -199,32 +130,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pseudo_tls_builder_embeds_token_in_random() {
+    fn cover_auth_does_not_serialize_reusable_secret() {
         let token = b"abcdef0123456789abcdef0123456789";
-        let builder = PseudoTlsBuilder::new(token.to_vec(), "cloudflare.com");
-        let bytes = builder.build();
-
-        assert!(bytes.len() > 40);
-        assert_eq!(bytes[0], TLS_HANDSHAKE_CONTENT_TYPE);
-
-        // Record header is 5 bytes.
-        // Handshake header is 4 bytes: [0x01, len_24].
-        // legacy_version is 2 bytes: [0x03, 0x03].
-        // random begins at offset 5 + 4 + 2 = 11.
-        let random_slice = &bytes[11..11 + 32];
-        assert_eq!(&random_slice[..32], &token[..32]);
+        let first = PseudoTlsBuilder::new(token.to_vec(), "cloudflare.com").build();
+        let second = PseudoTlsBuilder::new(token.to_vec(), "cloudflare.com").build();
+        assert_eq!(first[0], TLS_HANDSHAKE_CONTENT_TYPE);
+        assert!(!first.windows(token.len()).any(|window| window == token));
+        assert!(!second.windows(token.len()).any(|window| window == token));
+        assert_ne!(first, second);
     }
 
     #[test]
-    fn test_pseudo_tls_builder_default_secret_token() {
-        let builder = PseudoTlsBuilder::new(Vec::<u8>::new(), "cloudflare.com");
-        let bytes = builder.build();
+    fn session_id_is_hmac_of_fresh_challenge_and_sni() {
+        let token = b"client-relay-auth";
+        let wire = PseudoTlsBuilder::new(token.to_vec(), "cloudflare.com").build();
+        // TLS record(5) + handshake header(4) + legacy version(2).
+        let random = &wire[11..43];
+        assert_eq!(wire[43], 32);
+        let proof = &wire[44..76];
+        let mut mac = HmacSha256::new_from_slice(token).unwrap();
+        mac.update(COVER_AUTH_CONTEXT);
+        mac.update(random);
+        mac.update(b"cloudflare.com");
+        mac.verify_slice(proof).unwrap();
+    }
 
-        assert!(bytes.len() > 40);
-        assert_eq!(bytes[0], TLS_HANDSHAKE_CONTENT_TYPE);
+    #[test]
+    fn legacy_sni_switch_never_exposes_token() {
+        let token = b"supersecret";
+        let wire = PseudoTlsBuilder::new(token.to_vec(), "microsoft.com")
+            .embed_in_sni(true)
+            .build();
+        assert!(!wire.windows(token.len()).any(|window| window == token));
+        assert!(!String::from_utf8_lossy(&wire).contains(&hex::encode(token)));
+    }
 
-        let random_slice = &bytes[11..11 + 32];
-        let copy_len = DEFAULT_SECRET_TOKEN.len().min(32);
-        assert_eq!(&random_slice[..copy_len], &DEFAULT_SECRET_TOKEN[..copy_len]);
+    #[test]
+    fn empty_default_remains_non_shared() {
+        assert!(DEFAULT_SECRET_TOKEN.is_empty());
     }
 }

@@ -1,3 +1,3 @@
-pub mod db;
+pub mod secure;
 
-pub use db::StorageManager;
+pub use secure::StorageManager;

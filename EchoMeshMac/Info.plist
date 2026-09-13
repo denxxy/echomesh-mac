@@ -24,6 +24,8 @@
     <string>Copyright © 2026 EchoMesh. All rights reserved.</string>
     <key>NSUserNotificationUsageDescription</key>
     <string>EchoMesh notifies you of incoming peer messages and delivery state updates.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>EchoMesh uses Bluetooth to discover nearby peers and exchange end-to-end encrypted messages without a relay.</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.social-networking</string>
 </dict>

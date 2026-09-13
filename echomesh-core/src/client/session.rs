@@ -1,5 +1,5 @@
-use std::sync::{Arc, RwLock};
-use crate::noise::NoiseSession;
+use std::sync::RwLock;
+
 use crate::EchoMeshError;
 pub use crate::protocol::{ECHO_PEER_ID, ECHO_SERVICE_PEER_ID};
 
@@ -13,7 +13,6 @@ pub enum SessionState {
     Disconnected,
     Handshake,
     Transport {
-        session: Arc<tokio::sync::Mutex<NoiseSession>>,
         outbound_tx: tokio::sync::mpsc::Sender<OutboundPacket>,
     },
 }
@@ -30,25 +29,15 @@ impl ClientSessionManager {
     }
 
     pub fn set_handshake(&self) {
-        let mut s = self.state.write().unwrap();
-        *s = SessionState::Handshake;
+        *self.state.write().unwrap() = SessionState::Handshake;
     }
 
-    pub fn set_transport(
-        &self,
-        session: Arc<tokio::sync::Mutex<NoiseSession>>,
-        outbound_tx: tokio::sync::mpsc::Sender<OutboundPacket>,
-    ) {
-        let mut s = self.state.write().unwrap();
-        *s = SessionState::Transport {
-            session,
-            outbound_tx,
-        };
+    pub fn set_transport(&self, outbound_tx: tokio::sync::mpsc::Sender<OutboundPacket>) {
+        *self.state.write().unwrap() = SessionState::Transport { outbound_tx };
     }
 
     pub fn disconnect(&self) {
-        let mut s = self.state.write().unwrap();
-        *s = SessionState::Disconnected;
+        *self.state.write().unwrap() = SessionState::Disconnected;
     }
 
     pub fn is_transport(&self) -> bool {
@@ -56,23 +45,17 @@ impl ClientSessionManager {
     }
 
     pub fn get_outbound_tx(&self) -> Option<tokio::sync::mpsc::Sender<OutboundPacket>> {
-        let state_guard = self.state.read().unwrap();
-        match &*state_guard {
-            SessionState::Transport { outbound_tx, .. } => Some(outbound_tx.clone()),
+        match &*self.state.read().unwrap() {
+            SessionState::Transport { outbound_tx } => Some(outbound_tx.clone()),
             _ => None,
         }
     }
 
     pub fn send_packet(&self, recipient: Vec<u8>, data: Vec<u8>) -> Result<(), EchoMeshError> {
-        let state_guard = self.state.read().unwrap();
-        match &*state_guard {
-            SessionState::Transport { outbound_tx, .. } => {
-                let packet = OutboundPacket { recipient, data };
-                outbound_tx
-                    .try_send(packet)
-                    .map_err(|e| EchoMeshError::ConnectionError(format!("Outbound queue full or closed: {}", e)))?;
-                Ok(())
-            }
+        match &*self.state.read().unwrap() {
+            SessionState::Transport { outbound_tx } => outbound_tx
+                .try_send(OutboundPacket { recipient, data })
+                .map_err(|e| EchoMeshError::ConnectionError(format!("outbound queue unavailable: {e}"))),
             SessionState::Handshake | SessionState::Disconnected => Err(EchoMeshError::NotReady),
         }
     }

@@ -1,0 +1,55 @@
+name: Core CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: core-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: core-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: echomesh-core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build core
+        run: cargo check --all-targets
+      - name: Unit and interoperability tests
+        run: cargo test --all-targets
+
+  native-ble:
+    name: native-ble-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: echomesh-core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile native BLE peripheral and central backends
+        run: cargo check --all-targets --features native-ble
+      - name: Test native BLE-enabled core
+        run: cargo test --all-targets --features native-ble
+
+  mac-app:
+    name: macos-application-shell
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build core framework and macOS application
+        run: ./build.sh
