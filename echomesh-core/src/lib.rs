@@ -5,6 +5,7 @@ pub mod e2ee;
 pub mod model;
 pub mod noise;
 pub mod protocol;
+pub mod runtime;
 pub mod storage;
 pub mod transport;
 
@@ -28,6 +29,8 @@ pub enum EchoMeshError {
     HandshakeUnexpectedEof(String),
     #[error("Noise cryptographic error: {0}")]
     NoiseError(String),
+    #[error("Cryptographic error: {0}")]
+    CryptoError(String),
     #[error("Relay connection error: {0}")]
     ConnectionError(String),
     #[error("Tokio runtime error: {0}")]
