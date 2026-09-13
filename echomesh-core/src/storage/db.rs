@@ -228,3 +228,66 @@ mod tests {
         assert_eq!(storage.get_messages(&peer, 10, 0).unwrap()[0].text, "secret message");
     }
 }
+
+    #[test]
+    fn storage_persistence_and_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("echomesh.db");
+        let peer = [0xBB; 32];
+
+        {
+            let storage = StorageManager::new(&db_path).unwrap();
+            storage.save_contact(&Contact { peer_id: peer.to_vec(), name: "Bob".into(), added_at: 100 }).unwrap();
+            let msg = MessageRecord { id: "m1".into(), conversation_peer_id: peer.to_vec(), sender_peer_id: peer.to_vec(), text: "hello bob".into(), timestamp: 101, is_outgoing: true, status: 1 };
+            storage.save_message(&msg).unwrap();
+        }
+
+        // Restart storage with the same key
+        {
+            let storage = StorageManager::new(&db_path).unwrap();
+            let contact = storage.get_contact_by_peer_id(&peer).unwrap().unwrap();
+            assert_eq!(contact.name, "Bob");
+            let msgs = storage.get_messages(&peer, 10, 0).unwrap();
+            assert_eq!(msgs.len(), 1);
+            assert_eq!(msgs[0].text, "hello bob");
+        }
+    }
+
+    #[test]
+    fn storage_wrong_key_fails_decryption() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("echomesh.db");
+        let key_path = dir.path().join("storage.key");
+        let peer = [0xCC; 32];
+
+        {
+            let storage = StorageManager::new(&db_path).unwrap();
+            storage.save_contact(&Contact { peer_id: peer.to_vec(), name: "Charlie".into(), added_at: 200 }).unwrap();
+        }
+
+        // Overwrite key with a different key
+        let wrong_key = [0xFFu8; 32];
+        std::fs::write(&key_path, wrong_key).unwrap();
+
+        // Attempting to read contacts with the wrong key must fail with an error
+        let storage = StorageManager::new(&db_path).unwrap();
+        assert!(storage.get_contacts().is_err());
+    }
+
+    #[test]
+    fn storage_corrupted_encrypted_payload_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("echomesh.db");
+
+        let storage = StorageManager::new(&db_path).unwrap();
+        // Insert directly corrupted encrypted payload string
+        let conn = storage.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO contacts (peer_id, name, added_at) VALUES (?1, ?2, ?3)",
+            params![&[0xDDu8; 32][..], "enc1:not_a_valid_base64_payload_string!!!", 300],
+        ).unwrap();
+        drop(conn);
+
+        // Fetching corrupted contacts must return a storage error
+        assert!(storage.get_contacts().is_err());
+    }

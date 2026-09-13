@@ -47,4 +47,18 @@ impl AsyncTransport for BleTransport {
     async fn recv(&mut self) -> Result<Option<Vec<u8>>, EchoMeshError> { while let Some(c)=self.incoming_chunks.recv().await { if let Some(p)=self.accept_chunk(&c)? { return Ok(Some(p)); } } Ok(None) }
 }
 
-#[cfg(test)] mod tests { use super::*; #[tokio::test] async fn fragments_and_reassembles() { let(a_tx,mut a_rx)=mpsc::channel(64);let(b_tx,b_rx)=mpsc::channel(64);let mut t=BleTransport::new(20,a_tx,b_rx).unwrap();let data=vec![7u8;137];t.send(&data).await.unwrap();let expected=data.len().div_ceil(14);for _ in 0..expected{let c=a_rx.recv().await.unwrap();b_tx.send(c).await.unwrap();}assert_eq!(t.recv().await.unwrap().unwrap(),data); } }
+#[cfg(test)] mod tests { use super::*; #[tokio::test] async fn fragments_and_reassembles() { let(a_tx,mut a_rx)=mpsc::channel(64);let(b_tx,b_rx)=mpsc::channel(64);let mut t=BleTransport::new(20,a_tx,b_rx).unwrap();let data=vec![7u8;137];t.send(&data).await.unwrap();let expected=data.len().div_ceil(14);for _ in 0..expected{let c=a_rx.recv().await.unwrap();b_tx.send(c).await.unwrap();}assert_eq!(t.recv().await.unwrap().unwrap(),data); }
+    #[tokio::test]
+    async fn out_of_order_fragments() {
+        let (a_tx, mut a_rx) = mpsc::channel(64);
+        let (b_tx, b_rx) = mpsc::channel(64);
+        let mut t = BleTransport::new(20, a_tx, b_rx).unwrap();
+        let data = vec![7u8; 40];
+        t.send(&data).await.unwrap();
+        let mut chunks = Vec::new();
+        for _ in 0..data.len().div_ceil(14) { chunks.push(a_rx.recv().await.unwrap()); }
+        // Send in reverse order
+        for c in chunks.iter().rev() { b_tx.send(c.clone()).await.unwrap(); }
+        assert_eq!(t.recv().await.unwrap().unwrap(), data);
+    }
+}
