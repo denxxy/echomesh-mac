@@ -153,7 +153,6 @@ public actor CoreBridgeService {
             self.storagePath = appSupport.appendingPathComponent("EchoMesh", isDirectory: true).path
         }
 
-        // Hook up listener state transition callback to handle auto-reconnect
         listener.onStateChangeCallback = { [weak self] state in
             Task { [weak self] in
                 await self?.handleStateTransition(state)
@@ -161,16 +160,14 @@ public actor CoreBridgeService {
         }
     }
 
-    /// Logs an FFI error with raw description and full call stack symbols to os.Logger without swallowing.
+    /// Records diagnostics without publishing raw FFI text, filesystem paths,
+    /// endpoint data, peer identifiers, or stack frames to the unified system log.
     private func logFfiError(_ error: Error, context: String) {
-        let stackTrace = Thread.callStackSymbols.joined(separator: "\n")
         let rawErrorText = String(describing: error)
-        systemLogger.error("""
-        [CoreBridge] FFI Exception in \(context, privacy: .public): \(rawErrorText, privacy: .public)
-        Stack Trace:
-        \(stackTrace, privacy: .public)
-        """)
-        self.lastErrorMessage = "\(context): \(rawErrorText)"
+        systemLogger.error(
+            "[CoreBridge] FFI exception in \(context, privacy: .private): \(rawErrorText, privacy: .private)"
+        )
+        self.lastErrorMessage = "\(context): operation failed"
     }
 
     /// Initializes the Rust client with persistent storage in Application Support/EchoMesh.
@@ -179,7 +176,7 @@ public actor CoreBridgeService {
         do {
             clientInstance = try EchoMeshClient(storagePath: storagePath, listener: listener)
         } catch {
-            logFfiError(error, context: "start(storagePath: \(storagePath))")
+            logFfiError(error, context: "start")
             throw error
         }
     }
@@ -195,45 +192,43 @@ public actor CoreBridgeService {
         }
         let initLog = "[CoreBridge] Initiating connection to \(relayAddress) with key: <32 bytes verified>"
         print(initLog)
-        systemLogger.info("\(initLog, privacy: .public)")
+        systemLogger.info("\(initLog, privacy: .private)")
         Task { @MainActor in
             NetworkLogService.shared.log(initLog, level: .info)
         }
         do {
             try clientInstance?.connect(relayAddress: relayAddress, relayPublicKey: Data(relayPublicKey), secretTokenHex: secretTokenHex)
         } catch let error as EchoMeshError {
-            logFfiError(error, context: "connect(relayAddress: \(relayAddress))")
+            logFfiError(error, context: "connect")
             throw mapEchoMeshError(error)
         } catch {
-            logFfiError(error, context: "connect(relayAddress: \(relayAddress))")
+            logFfiError(error, context: "connect")
             throw CoreBridgeError.connectionFailed(error.localizedDescription)
         }
     }
 
     /// Connects to a remote relay endpoint, decoding and validating configuration.
     public func connectToRelay(endpoint: RelayEndpoint) async throws {
-        // Validate host and port
         do {
             try endpoint.validateHost()
             try endpoint.validatePort()
         } catch {
             let desc = error.localizedDescription
-            logFfiError(error, context: "Endpoint validation failed for \(endpoint.formattedAddress)")
+            logFfiError(error, context: "endpoint validation")
             Task { @MainActor in
-                NetworkLogService.shared.log("Invalid endpoint \(endpoint.formattedAddress): \(desc)", level: .error)
+                NetworkLogService.shared.log("Invalid relay endpoint", level: .error)
             }
             throw CoreBridgeError.invalidEndpoint(desc)
         }
 
-        // Validate and clean Base64 public key
         let rawBase64Key = endpoint.publicKeyBase64
         let cleanedKey = rawBase64Key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let keyData = Data(base64Encoded: cleanedKey), keyData.count == 32 else {
             let errString = "Неверный формат ключа: ожидается 32 байта Base64"
             self.lastErrorMessage = errString
-            logFfiError(CoreBridgeError.invalidPublicKey(errString), context: "Public key validation for \(endpoint.formattedAddress)")
+            logFfiError(CoreBridgeError.invalidPublicKey(errString), context: "public key validation")
             Task { @MainActor in
-                NetworkLogService.shared.log("Invalid public key for \(endpoint.formattedAddress): \(errString)", level: .error)
+                NetworkLogService.shared.log("Invalid relay public key", level: .error)
             }
             throw CoreBridgeError.invalidPublicKey(errString)
         }
@@ -247,10 +242,7 @@ public actor CoreBridgeService {
         self.lastErrorMessage = nil
 
         let address = endpoint.formattedAddress
-
-        // Exact Xcode console log requirement:
-        // [CoreBridge] Initiating connection to 77.81.5.109:8443 with key: <32 bytes verified>
-        let initLog = "[CoreBridge] Initiating connection to \(address) with key: <32 bytes verified>"
+        let initLog = "[CoreBridge] Initiating relay connection with verified 32-byte key"
         print(initLog)
         systemLogger.info("\(initLog, privacy: .public)")
         Task { @MainActor in
@@ -260,10 +252,10 @@ public actor CoreBridgeService {
         let rawToken = endpoint.secretTokenHex.trimmingCharacters(in: .whitespacesAndNewlines)
         let tokenParam: String? = rawToken.isEmpty ? nil : rawToken
 
-        print("[CoreBridge] Starting connection session to \(address)...")
-        systemLogger.info("[CoreBridge] Starting connection session to \(address)...")
+        print("[CoreBridge] Starting relay connection session...")
+        systemLogger.info("[CoreBridge] Starting relay connection session...")
         Task { @MainActor in
-            NetworkLogService.shared.log("[CoreBridge] Starting connection session to \(address)...", level: .info)
+            NetworkLogService.shared.log("[CoreBridge] Starting relay connection session...", level: .info)
         }
 
         do {
@@ -274,29 +266,29 @@ public actor CoreBridgeService {
                 throw CoreBridgeError.clientNotInitialized
             }
             try client.connect(relayAddress: address, relayPublicKey: Data(keyBytes), secretTokenHex: tokenParam)
-            print("[CoreBridge] Session established successfully with \(address)")
-            systemLogger.info("[CoreBridge] Session established successfully with \(address)")
+            print("[CoreBridge] Relay session established successfully")
+            systemLogger.info("[CoreBridge] Relay session established successfully")
             Task { @MainActor in
-                NetworkLogService.shared.log("[CoreBridge] Session established successfully with \(address)", level: .info)
+                NetworkLogService.shared.log("[CoreBridge] Relay session established successfully", level: .info)
             }
         } catch let error as EchoMeshError {
-            print("[CoreBridge] Session terminated with error: \(error)")
-            logFfiError(error, context: "connectToRelay(\(address))")
+            print("[CoreBridge] Relay session terminated with an error")
+            logFfiError(error, context: "connectToRelay")
             let mapped = mapEchoMeshError(error)
             let errString = mapped.localizedDescription
             self.lastErrorMessage = errString
             Task { @MainActor in
-                NetworkLogService.shared.log("[CoreBridge] Session terminated with error: \(errString)", level: .error)
+                NetworkLogService.shared.log("[CoreBridge] Relay session terminated with an error", level: .error)
             }
             scheduleAutoReconnect()
             throw mapped
         } catch {
-            print("[CoreBridge] Session terminated with error: \(error)")
-            logFfiError(error, context: "connectToRelay(\(address))")
+            print("[CoreBridge] Relay session terminated with an error")
+            logFfiError(error, context: "connectToRelay")
             let errString = error.localizedDescription
             self.lastErrorMessage = errString
             Task { @MainActor in
-                NetworkLogService.shared.log("[CoreBridge] Session terminated with error: \(errString)", level: .error)
+                NetworkLogService.shared.log("[CoreBridge] Relay session terminated with an error", level: .error)
             }
             scheduleAutoReconnect()
             throw CoreBridgeError.connectionFailed(errString)
@@ -312,7 +304,7 @@ public actor CoreBridgeService {
             let desc = "Expected 32 bytes, got \(relayKey.count)"
             throw CoreBridgeError.invalidPublicKey(desc)
         }
-        let initLog = "[CoreBridge] Initiating connection to \(relayUrl) with key: <32 bytes verified>"
+        let initLog = "[CoreBridge] Initiating relay connection with verified 32-byte key"
         print(initLog)
         systemLogger.info("\(initLog, privacy: .public)")
         Task { @MainActor in
@@ -321,10 +313,10 @@ public actor CoreBridgeService {
         do {
             try clientInstance?.connect(relayAddress: relayUrl, relayPublicKey: relayKey, secretTokenHex: secretTokenHex)
         } catch let error as EchoMeshError {
-            logFfiError(error, context: "connect(\(relayUrl))")
+            logFfiError(error, context: "connect")
             throw mapEchoMeshError(error)
         } catch {
-            logFfiError(error, context: "connect(\(relayUrl))")
+            logFfiError(error, context: "connect")
             throw CoreBridgeError.connectionFailed(error.localizedDescription)
         }
     }
@@ -361,18 +353,17 @@ public actor CoreBridgeService {
         }
     }
 
-    /// Sends an encrypted frame via FFI in detached task, without blocking MainActor.
     public func sendMessage(payload: Data, recipient: [UInt8]) async throws {
         guard let client = self.clientInstance else {
             systemLogger.error("[CoreBridge] sendMessage failed: clientInstance is nil")
             throw CoreBridgeError.notInitialized
         }
         guard connectionState == .connected else {
-            systemLogger.error("[CoreBridge] sendMessage failed: not connected (state: \(String(describing: self.currentConnectionState)))")
+            systemLogger.error("[CoreBridge] sendMessage failed: not connected")
             throw CoreBridgeError.notReady
         }
         let byteCount = payload.count
-        let logMsg = "[CoreBridge] Sending \(byteCount) bytes to Echo Node"
+        let logMsg = "[CoreBridge] Sending \(byteCount) encrypted bytes"
         print(logMsg)
         systemLogger.info("\(logMsg, privacy: .public)")
         Task { @MainActor in
@@ -383,7 +374,6 @@ public actor CoreBridgeService {
         }.value
     }
 
-    /// Adds a new contact by validating and storing their 32-byte public key.
     public func addContact(peerIdHex: String, name: String) throws {
         if clientInstance == nil {
             try start()
@@ -394,12 +384,11 @@ public actor CoreBridgeService {
         do {
             try client.addContact(peerIdHex: peerIdHex, name: name)
         } catch {
-            logFfiError(error, context: "addContact(peerIdHex: \(peerIdHex), name: \(name))")
+            logFfiError(error, context: "addContact")
             throw error
         }
     }
 
-    /// Fetches all stored contacts.
     public func getContacts() throws -> [Contact] {
         if clientInstance == nil {
             try start()
@@ -410,12 +399,11 @@ public actor CoreBridgeService {
         do {
             return try client.getContacts()
         } catch {
-            logFfiError(error, context: "getContacts()")
+            logFfiError(error, context: "getContacts")
             throw error
         }
     }
 
-    /// Fetches all conversation summaries ordered by last activity timestamp descending.
     public func getConversations() throws -> [ConversationSummary] {
         if clientInstance == nil {
             try start()
@@ -426,12 +414,11 @@ public actor CoreBridgeService {
         do {
             return try client.getConversations()
         } catch {
-            logFfiError(error, context: "getConversations()")
+            logFfiError(error, context: "getConversations")
             throw error
         }
     }
 
-    /// Fetches messages for a specific conversation peer ID.
     public func getMessages(peerIdHex: String, limit: UInt32 = 100) throws -> [MessageRecord] {
         if clientInstance == nil {
             try start()
@@ -442,12 +429,11 @@ public actor CoreBridgeService {
         do {
             return try client.getMessages(peerIdHex: peerIdHex, limit: limit)
         } catch {
-            logFfiError(error, context: "getMessages(peerIdHex: \(peerIdHex))")
+            logFfiError(error, context: "getMessages")
             throw error
         }
     }
 
-    /// Sends a chat message to a recipient peer ID and saves it to local SQLite.
     public func sendChatMessage(recipientPeerIdHex: String, text: String) throws -> MessageRecord {
         if clientInstance == nil {
             try start()
@@ -458,12 +444,11 @@ public actor CoreBridgeService {
         do {
             return try client.sendChatMessage(recipientPeerIdHex: recipientPeerIdHex, text: text)
         } catch {
-            logFfiError(error, context: "sendChatMessage(to: \(recipientPeerIdHex))")
+            logFfiError(error, context: "sendChatMessage")
             throw error
         }
     }
 
-    /// Sends an encrypted message to the target recipient.
     public func sendMessage(to: String, text: String) throws -> MessagePayload {
         if clientInstance == nil {
             try start()
@@ -474,12 +459,11 @@ public actor CoreBridgeService {
         do {
             return try client.sendMessage(to: to, text: text)
         } catch {
-            logFfiError(error, context: "sendMessage(to: \(to))")
+            logFfiError(error, context: "sendMessage")
             throw error
         }
     }
 
-    /// Disconnects from the current relay/mesh, canceling auto-reconnection.
     public func disconnect() throws {
         isManualDisconnect = true
         connectionTask?.cancel()
@@ -492,7 +476,7 @@ public actor CoreBridgeService {
         do {
             try clientInstance?.disconnect()
         } catch {
-            logFfiError(error, context: "disconnect()")
+            logFfiError(error, context: "disconnect")
             throw error
         }
         Task { @MainActor in
@@ -500,7 +484,6 @@ public actor CoreBridgeService {
         }
     }
 
-    /// Gracefully stops the Tokio runtime and releases resources upon app exit.
     public func shutdown() {
         isManualDisconnect = true
         connectionTask?.cancel()
@@ -511,33 +494,28 @@ public actor CoreBridgeService {
         do {
             try clientInstance?.shutdown()
         } catch {
-            logFfiError(error, context: "shutdown()")
-            print("[CoreBridgeService] Error during shutdown: \(error)")
+            logFfiError(error, context: "shutdown")
+            print("[CoreBridgeService] Error during shutdown")
         }
         clientInstance = nil
     }
 
-    /// Current connection state of the Rust engine.
     public func currentState() -> NetworkState {
         return clientInstance?.currentState() ?? .offline
     }
 
-    /// Current measured latency in milliseconds.
     public func pingMs() -> UInt32 {
         return clientInstance?.pingMs() ?? 0
     }
 
-    /// Returns the active relay endpoint being used.
     public func getActiveEndpoint() -> RelayEndpoint? {
         return activeEndpoint
     }
 
-    /// Returns the last connection error message, if any.
     public func getLastErrorMessage() -> String? {
         return lastErrorMessage
     }
 
-    /// Internal handler invoked on network state transitions from the core engine.
     private func handleStateTransition(_ state: NetworkState) {
         currentConnectionState = state
 
@@ -569,12 +547,10 @@ public actor CoreBridgeService {
         }
     }
 
-    /// Schedules an auto-reconnection attempt with exponential backoff (1s, 2s, 4s, ..., max 30s).
     private func scheduleAutoReconnect() {
-        guard !isManualDisconnect, let endpoint = activeEndpoint else { return }
+        guard !isManualDisconnect, activeEndpoint != nil else { return }
         guard reconnectTask == nil else { return }
 
-        // Exponential backoff: min(30, 1 << attempt) seconds
         let delaySeconds: UInt64
         if reconnectAttempt == 0 {
             delaySeconds = 1
@@ -586,11 +562,9 @@ public actor CoreBridgeService {
         reconnectAttempt += 1
 
         let attemptNum = reconnectAttempt
-        let targetAddress = endpoint.formattedAddress
-
         Task { @MainActor in
             NetworkLogService.shared.log(
-                "Connection lost. Reconnecting to \(targetAddress) in \(delaySeconds)s (attempt \(attemptNum))...",
+                "Connection lost. Reconnecting in \(delaySeconds)s (attempt \(attemptNum))...",
                 level: .warning
             )
         }
@@ -599,7 +573,7 @@ public actor CoreBridgeService {
             do {
                 try await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
             } catch {
-                return // Task was cancelled
+                return
             }
 
             guard let self = self else { return }
@@ -607,7 +581,6 @@ public actor CoreBridgeService {
         }
     }
 
-    /// Executes the pending reconnection attempt.
     private func executeAutoReconnect() async {
         reconnectTask = nil
         guard !isManualDisconnect, let endpoint = activeEndpoint else { return }
@@ -618,33 +591,30 @@ public actor CoreBridgeService {
             if clientInstance == nil {
                 try start()
             }
-            let initLog = "[CoreBridge] Initiating connection to \(endpoint.formattedAddress) with key: <32 bytes verified>"
+            let initLog = "[CoreBridge] Initiating relay reconnection with verified key"
             print(initLog)
             systemLogger.info("\(initLog, privacy: .public)")
             let rawToken = endpoint.secretTokenHex.trimmingCharacters(in: .whitespacesAndNewlines)
             let tokenParam: String? = rawToken.isEmpty ? nil : rawToken
             try clientInstance?.connect(relayAddress: endpoint.formattedAddress, relayPublicKey: Data(keyBytes), secretTokenHex: tokenParam)
-            print("[CoreBridge] Reconnection session established successfully with \(endpoint.formattedAddress)")
-            systemLogger.info("[CoreBridge] Reconnection session established successfully with \(endpoint.formattedAddress)")
+            print("[CoreBridge] Reconnection session established successfully")
+            systemLogger.info("[CoreBridge] Reconnection session established successfully")
             Task { @MainActor in
-                NetworkLogService.shared.log("[CoreBridge] Reconnection session established successfully with \(endpoint.formattedAddress)", level: .info)
+                NetworkLogService.shared.log("[CoreBridge] Reconnection session established successfully", level: .info)
             }
         } catch {
-            print("[CoreBridge] Session terminated with error: \(error)")
-            logFfiError(error, context: "executeAutoReconnect(\(endpoint.formattedAddress))")
+            print("[CoreBridge] Reconnection session terminated with an error")
+            logFfiError(error, context: "executeAutoReconnect")
             let errString = error.localizedDescription
             self.lastErrorMessage = errString
             Task { @MainActor in
-                NetworkLogService.shared.log("[CoreBridge] Session terminated with error: \(errString)", level: .error)
+                NetworkLogService.shared.log("[CoreBridge] Reconnection session terminated with an error", level: .error)
             }
             scheduleAutoReconnect()
         }
     }
 
-    /// Performs an asynchronous health check (TCP handshake/ping) to verify endpoint reachability
-    /// and measure round-trip time (RTT in ms).
     public static func performHealthCheck(endpoint: RelayEndpoint) async -> Result<UInt32, HealthCheckError> {
-        // Validate host and port first
         do {
             try endpoint.validateHost()
             try endpoint.validatePort()
@@ -652,7 +622,6 @@ public actor CoreBridgeService {
             return .failure(HealthCheckError(error.localizedDescription))
         }
 
-        // Validate public key if present
         if !endpoint.publicKeyBase64.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             do {
                 _ = try endpoint.decodePublicKey()
