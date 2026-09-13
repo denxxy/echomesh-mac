@@ -73,9 +73,9 @@ public final class BLETransportService: NSObject {
             recipient: recipientPeerId,
             payload: payload
         )
-        let mtu = peer.maximumWriteValueLength(for: .withoutResponse)
+        let mtu = peer.maximumWriteValueLength(for: .withResponse)
         for fragment in try fragments(packet, mtu: mtu, messageId: UInt32.random(in: .min ... .max)) {
-            peer.writeValue(fragment, for: characteristic, type: .withoutResponse)
+            peer.writeValue(fragment, for: characteristic, type: .withResponse)
         }
     }
 
