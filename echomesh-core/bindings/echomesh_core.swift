@@ -553,6 +553,10 @@ public protocol EchoMeshClientProtocol: AnyObject, Sendable {
     
     func getMessages(peerIdHex: String, limit: UInt32) throws  -> [MessageRecord]
     
+    func localPeerId()  -> Data
+    
+    func localPeerIdHex()  -> String
+    
     func pingMs()  -> UInt32
     
     func sendChatMessage(recipientPeerIdHex: String, text: String) throws  -> MessageRecord
@@ -676,6 +680,20 @@ open func getMessages(peerIdHex: String, limit: UInt32)throws  -> [MessageRecord
     uniffi_echomesh_core_fn_method_echomeshclient_get_messages(self.uniffiClonePointer(),
         FfiConverterString.lower(peerIdHex),
         FfiConverterUInt32.lower(limit),$0
+    )
+})
+}
+    
+open func localPeerId() -> Data  {
+    return try!  FfiConverterData.lift(try! rustCall() {
+    uniffi_echomesh_core_fn_method_echomeshclient_local_peer_id(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+open func localPeerIdHex() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_echomesh_core_fn_method_echomeshclient_local_peer_id_hex(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -1348,6 +1366,8 @@ public enum EchoMeshError: Swift.Error {
     )
     case NoiseError(String
     )
+    case CryptoError(String
+    )
     case ConnectionError(String
     )
     case RuntimeError(String
@@ -1384,16 +1404,19 @@ public struct FfiConverterTypeEchoMeshError: FfiConverterRustBuffer {
         case 4: return .NoiseError(
             try FfiConverterString.read(from: &buf)
             )
-        case 5: return .ConnectionError(
+        case 5: return .CryptoError(
             try FfiConverterString.read(from: &buf)
             )
-        case 6: return .RuntimeError(
+        case 6: return .ConnectionError(
             try FfiConverterString.read(from: &buf)
             )
-        case 7: return .StorageError(
+        case 7: return .RuntimeError(
             try FfiConverterString.read(from: &buf)
             )
-        case 8: return .NotReady
+        case 8: return .StorageError(
+            try FfiConverterString.read(from: &buf)
+            )
+        case 9: return .NotReady
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -1427,23 +1450,28 @@ public struct FfiConverterTypeEchoMeshError: FfiConverterRustBuffer {
             FfiConverterString.write(v1, into: &buf)
             
         
-        case let .ConnectionError(v1):
+        case let .CryptoError(v1):
             writeInt(&buf, Int32(5))
             FfiConverterString.write(v1, into: &buf)
             
         
-        case let .RuntimeError(v1):
+        case let .ConnectionError(v1):
             writeInt(&buf, Int32(6))
             FfiConverterString.write(v1, into: &buf)
             
         
-        case let .StorageError(v1):
+        case let .RuntimeError(v1):
             writeInt(&buf, Int32(7))
             FfiConverterString.write(v1, into: &buf)
             
         
-        case .NotReady:
+        case let .StorageError(v1):
             writeInt(&buf, Int32(8))
+            FfiConverterString.write(v1, into: &buf)
+            
+        
+        case .NotReady:
+            writeInt(&buf, Int32(9))
         
         }
     }
@@ -1913,6 +1941,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_echomesh_core_checksum_method_echomeshclient_get_messages() != 4464) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_echomesh_core_checksum_method_echomeshclient_local_peer_id() != 65132) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_echomesh_core_checksum_method_echomeshclient_local_peer_id_hex() != 47418) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_echomesh_core_checksum_method_echomeshclient_ping_ms() != 19271) {
