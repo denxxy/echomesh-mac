@@ -1,0 +1,59 @@
+use async_trait::async_trait;
+use tokio::sync::mpsc;
+
+use super::core::{AsyncTransport, TransportKind};
+use crate::EchoMeshError;
+
+const HEADER: usize = 6;
+const MAX_PACKET: usize = 64 * 1024;
+
+/// Common Rust-side BLE packetization. Platform Bluetooth stacks feed/consume chunks
+/// through the channel endpoints, keeping radio APIs outside the portable core.
+pub struct BleTransport {
+    mtu: usize,
+    outgoing_chunks: mpsc::Sender<Vec<u8>>,
+    incoming_chunks: mpsc::Receiver<Vec<u8>>,
+    next_id: u16,
+    assembly: Option<Assembly>,
+}
+
+struct Assembly { id: u16, total: u16, chunks: Vec<Option<Vec<u8>>> }
+
+impl BleTransport {
+    pub fn new(mtu: usize, outgoing_chunks: mpsc::Sender<Vec<u8>>, incoming_chunks: mpsc::Receiver<Vec<u8>>) -> Result<Self, EchoMeshError> {
+        if mtu <= HEADER { return Err(EchoMeshError::ConnectionError("BLE MTU too small".into())); }
+        Ok(Self { mtu, outgoing_chunks, incoming_chunks, next_id: 1, assembly: None })
+    }
+
+    fn encode_chunks(&mut self, packet: &[u8]) -> Result<Vec<Vec<u8>>, EchoMeshError> {
+        if packet.len() > MAX_PACKET { return Err(EchoMeshError::ConnectionError("BLE packet exceeds 64 KiB".into())); }
+        let payload_per_chunk = self.mtu - HEADER;
+        let total = packet.len().div_ceil(payload_per_chunk).max(1);
+        if total > u16::MAX as usize { return Err(EchoMeshError::ConnectionError("too many BLE fragments".into())); }
+        let id = self.next_id; self.next_id = self.next_id.wrapping_add(1).max(1);
+        Ok(packet.chunks(payload_per_chunk).enumerate().map(|(index,payload)| {
+            let mut chunk=Vec::with_capacity(HEADER+payload.len());
+            chunk.extend_from_slice(&id.to_be_bytes()); chunk.extend_from_slice(&(index as u16).to_be_bytes()); chunk.extend_from_slice(&(total as u16).to_be_bytes()); chunk.extend_from_slice(payload); chunk
+        }).collect())
+    }
+
+    fn accept_chunk(&mut self, chunk: &[u8]) -> Result<Option<Vec<u8>>, EchoMeshError> {
+        if chunk.len() < HEADER { return Err(EchoMeshError::ConnectionError("truncated BLE fragment".into())); }
+        let id=u16::from_be_bytes([chunk[0],chunk[1]]); let index=u16::from_be_bytes([chunk[2],chunk[3]]); let total=u16::from_be_bytes([chunk[4],chunk[5]]);
+        if total==0 || index>=total { return Err(EchoMeshError::ConnectionError("invalid BLE fragment index".into())); }
+        if self.assembly.as_ref().map(|a|a.id)!=Some(id) { self.assembly=Some(Assembly{id,total,chunks:vec![None;total as usize]}); }
+        let a=self.assembly.as_mut().unwrap(); if a.total!=total { return Err(EchoMeshError::ConnectionError("BLE fragment total changed".into())); }
+        a.chunks[index as usize]=Some(chunk[HEADER..].to_vec());
+        if a.chunks.iter().all(Option::is_some) { let mut packet=Vec::new(); for p in &mut a.chunks { packet.extend_from_slice(p.take().unwrap().as_slice()); } self.assembly=None; if packet.len()>MAX_PACKET{return Err(EchoMeshError::ConnectionError("BLE reassembly exceeds limit".into()));} return Ok(Some(packet)); }
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl AsyncTransport for BleTransport {
+    fn kind(&self) -> TransportKind { TransportKind::Ble }
+    async fn send(&mut self, packet: &[u8]) -> Result<(), EchoMeshError> { for chunk in self.encode_chunks(packet)? { self.outgoing_chunks.send(chunk).await.map_err(|_| EchoMeshError::ConnectionError("BLE output closed".into()))?; } Ok(()) }
+    async fn recv(&mut self) -> Result<Option<Vec<u8>>, EchoMeshError> { while let Some(chunk)=self.incoming_chunks.recv().await { if let Some(packet)=self.accept_chunk(&chunk)? { return Ok(Some(packet)); } } Ok(None) }
+}
+
+#[cfg(test)] mod tests { use super::*; #[tokio::test] async fn fragments_and_reassembles() { let (a_tx,mut a_rx)=mpsc::channel(32); let (b_tx,b_rx)=mpsc::channel(32); let mut t=BleTransport::new(20,a_tx,b_rx).unwrap(); let data=vec![7u8;137]; t.send(&data).await.unwrap(); while let Some(c)=a_rx.recv().await { b_tx.send(c).await.unwrap(); if b_tx.capacity()<31 { break; } } drop(b_tx); assert_eq!(t.recv().await.unwrap().unwrap(),data); } }
