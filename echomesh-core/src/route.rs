@@ -3,16 +3,36 @@ use ed25519_dalek::{Signer, Verifier};
 
 use crate::identity::{route_id_from_peer_id, ClientIdentity};
 use crate::protocol::Frame;
+use crate::EchoMeshError;
 
 pub type RouteId = [u8; 16];
 
 pub const ROUTER_CONTROL_ID: RouteId = [0xEC; 16];
+pub const RELAY_AUTH_MAGIC: &[u8; 4] = b"EMAU";
+pub const RELAY_AUTH_OK_MAGIC: &[u8; 4] = b"EMOK";
 pub const ROUTE_REGISTER_MAGIC: &[u8; 4] = b"EMR2";
 pub const ROUTE_REGISTERED_MAGIC: &[u8; 4] = b"EMA2";
 pub const ROUTE_REGISTRATION_CONTEXT: &[u8] = b"EchoMesh route registration v2";
 
-pub fn peer_route_id(peer_id: &[u8; 32]) -> RouteId {
-    route_id_from_peer_id(peer_id)
+pub fn peer_route_id(peer_id: &[u8; 32]) -> RouteId { route_id_from_peer_id(peer_id) }
+
+pub fn relay_auth_frame(token: &[u8]) -> Result<Frame, EchoMeshError> {
+    if token.is_empty() {
+        return Err(EchoMeshError::ConnectionError("relay authentication token is required".into()));
+    }
+    if token.len() > u16::MAX as usize {
+        return Err(EchoMeshError::ConnectionError("relay authentication token is too large".into()));
+    }
+    let mut payload = Vec::with_capacity(6 + token.len());
+    payload.extend_from_slice(RELAY_AUTH_MAGIC);
+    payload.extend_from_slice(&(token.len() as u16).to_be_bytes());
+    payload.extend_from_slice(token);
+    Frame::new(ROUTER_CONTROL_ID, [0u8; 8], Bytes::from(payload))
+        .map_err(|e| EchoMeshError::ConnectionError(format!("relay auth frame: {e}")))
+}
+
+pub fn is_relay_auth_ack(frame: &Frame) -> bool {
+    frame.session_id == ROUTER_CONTROL_ID && frame.payload.as_ref() == RELAY_AUTH_OK_MAGIC
 }
 
 pub fn registration_frame(identity: &ClientIdentity) -> Frame {
@@ -23,32 +43,30 @@ pub fn registration_frame(identity: &ClientIdentity) -> Frame {
     signed.extend_from_slice(&route_id);
     signed.extend_from_slice(&peer_id);
     let signature = identity.signing_key().sign(&signed);
-
     let mut payload = Vec::with_capacity(116);
     payload.extend_from_slice(ROUTE_REGISTER_MAGIC);
     payload.extend_from_slice(&route_id);
     payload.extend_from_slice(&peer_id);
     payload.extend_from_slice(&signature.to_bytes());
-    Frame::new(ROUTER_CONTROL_ID, [0u8; 8], Bytes::from(payload))
-        .expect("signed route registration always fits in a frame")
+    Frame::new(ROUTER_CONTROL_ID, [0u8; 8], Bytes::from(payload)).expect("signed route registration always fits")
 }
 
 pub fn registration_ack_route(frame: &Frame) -> Option<RouteId> {
-    if frame.session_id != ROUTER_CONTROL_ID
-        || frame.payload.len() != 20
-        || &frame.payload[..4] != ROUTE_REGISTERED_MAGIC
-    {
-        return None;
-    }
-    let mut route_id = [0u8; 16];
-    route_id.copy_from_slice(&frame.payload[4..20]);
-    Some(route_id)
+    if frame.session_id != ROUTER_CONTROL_ID || frame.payload.len() != 20 || &frame.payload[..4] != ROUTE_REGISTERED_MAGIC { return None; }
+    let mut route_id = [0u8; 16]; route_id.copy_from_slice(&frame.payload[4..20]); Some(route_id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ed25519_dalek::{Signature, VerifyingKey};
+
+    #[test]
+    fn relay_auth_wire_format_is_stable() {
+        let frame = relay_auth_frame(b"secret").unwrap();
+        assert_eq!(frame.session_id, ROUTER_CONTROL_ID);
+        assert_eq!(&frame.payload[..], b"EMAU\0\x06secret");
+    }
 
     #[test]
     fn registration_is_signed_and_bound_to_peer_route() {
@@ -59,13 +77,8 @@ mod tests {
         assert_eq!(&frame.payload[4..20], &identity.route_id());
         assert_eq!(&frame.payload[20..52], &identity.public_key());
         assert_eq!(frame.payload.len(), 116);
-
-        let mut signed = Vec::new();
-        signed.extend_from_slice(ROUTE_REGISTRATION_CONTEXT);
-        signed.extend_from_slice(&frame.payload[4..20]);
-        signed.extend_from_slice(&frame.payload[20..52]);
+        let mut signed = Vec::new(); signed.extend_from_slice(ROUTE_REGISTRATION_CONTEXT); signed.extend_from_slice(&frame.payload[4..20]); signed.extend_from_slice(&frame.payload[20..52]);
         let key = VerifyingKey::from_bytes(&identity.public_key()).unwrap();
-        let signature = Signature::from_slice(&frame.payload[52..116]).unwrap();
-        key.verify(&signed, &signature).unwrap();
+        let signature = Signature::from_slice(&frame.payload[52..116]).unwrap(); key.verify(&signed, &signature).unwrap();
     }
 }
