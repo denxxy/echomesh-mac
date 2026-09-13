@@ -30,18 +30,13 @@ pub struct EchoMeshClient {
 #[uniffi::export]
 impl EchoMeshClient {
     #[uniffi::constructor]
-    pub fn new(
-        storage_path: String,
-        listener: Box<dyn CoreEventsListener>,
-    ) -> Result<Arc<Self>, EchoMeshError> {
-        std::fs::create_dir_all(&storage_path)
-            .map_err(|e| EchoMeshError::StorageError(e.to_string()))?;
+    pub fn new(storage_path: String, listener: Box<dyn CoreEventsListener>) -> Result<Arc<Self>, EchoMeshError> {
+        std::fs::create_dir_all(&storage_path).map_err(|e| EchoMeshError::StorageError(e.to_string()))?;
         let root = std::path::Path::new(&storage_path);
         let storage = Arc::new(StorageManager::new(root.join("echomesh.db"))?);
         let identity = crate::crypto::load_or_generate_identity(&root.join("identity.key"))?;
         let runtime = crate::runtime::shared_runtime()?;
         let (tx, _) = tokio::sync::broadcast::channel::<()>(4);
-
         Ok(Arc::new(Self {
             storage_path,
             storage,
@@ -56,25 +51,11 @@ impl EchoMeshClient {
         }))
     }
 
-    pub fn storage_path(&self) -> String {
-        self.storage_path.clone()
-    }
-
-    pub fn current_state(&self) -> NetworkState {
-        *self.state.read().unwrap()
-    }
-
-    pub fn ping_ms(&self) -> u32 {
-        self.ping_ms.load(Ordering::Relaxed)
-    }
-
-    pub fn local_peer_id_hex(&self) -> String {
-        self.identity.public_key_hex.clone()
-    }
-
-    pub fn local_peer_id(&self) -> Vec<u8> {
-        self.identity.public_key.clone()
-    }
+    pub fn storage_path(&self) -> String { self.storage_path.clone() }
+    pub fn current_state(&self) -> NetworkState { *self.state.read().unwrap() }
+    pub fn ping_ms(&self) -> u32 { self.ping_ms.load(Ordering::Relaxed) }
+    pub fn local_peer_id_hex(&self) -> String { self.identity.public_key_hex.clone() }
+    pub fn local_peer_id(&self) -> Vec<u8> { self.identity.public_key.clone() }
 
     pub fn send_packet(&self, recipient: Vec<u8>, data: Vec<u8>) -> Result<(), EchoMeshError> {
         let guard = self.outbound_tx.read().unwrap();
@@ -83,41 +64,17 @@ impl EchoMeshClient {
             .map_err(|e| EchoMeshError::ConnectionError(format!("outbound queue unavailable: {}", e)))
     }
 
-    pub fn connect(
-        &self,
-        relay_address: String,
-        relay_public_key: Vec<u8>,
-        secret_token_hex: Option<String>,
-    ) -> Result<(), EchoMeshError> {
+    pub fn connect(&self, relay_address: String, relay_public_key: Vec<u8>, secret_token_hex: Option<String>) -> Result<(), EchoMeshError> {
         if relay_public_key.len() != 32 {
-            return Err(EchoMeshError::InvalidKeyLength {
-                expected: 32,
-                actual: relay_public_key.len() as u32,
-            });
+            return Err(EchoMeshError::InvalidKeyLength { expected: 32, actual: relay_public_key.len() as u32 });
         }
-
-        let token_text = secret_token_hex
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .ok_or_else(|| {
-                EchoMeshError::ConnectionError(
-                    "relay authentication token is required; no compiled default exists".into(),
-                )
-            })?;
+        let token_text = secret_token_hex.as_deref().map(str::trim).filter(|v| !v.is_empty()).ok_or_else(|| {
+            EchoMeshError::ConnectionError("relay authentication token is required; no compiled default exists".into())
+        })?;
         let token = hex::decode(token_text).unwrap_or_else(|_| token_text.as_bytes().to_vec());
-        if token.is_empty() {
-            return Err(EchoMeshError::ConnectionError(
-                "relay authentication token is empty".into(),
-            ));
-        }
-
+        if token.is_empty() { return Err(EchoMeshError::ConnectionError("relay authentication token is empty".into())); }
         let server_key: [u8; 32] = relay_public_key.as_slice().try_into().unwrap();
-        let clean_addr = relay_address
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .trim_start_matches("mesh://")
-            .to_string();
+        let clean_addr = relay_address.trim_start_matches("https://").trim_start_matches("http://").trim_start_matches("mesh://").to_string();
 
         self.session_mgr.set_handshake();
         *self.state.write().unwrap() = NetworkState::Connecting;
@@ -126,46 +83,22 @@ impl EchoMeshClient {
         let timeout = Duration::from_secs(5);
         let identity_public = self.identity.public_key.clone();
         let connected = self.runtime.block_on(async {
-            let mut stream = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(&clean_addr))
-                .await
+            let mut stream = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(&clean_addr)).await
                 .map_err(|_| EchoMeshError::HandshakeTimeout("TCP connect timed out".into()))?
-                .map_err(|e| {
-                    EchoMeshError::ConnectionError(format!(
-                        "TCP connection to {} failed: {}",
-                        clean_addr, e
-                    ))
-                })?;
-
+                .map_err(|e| EchoMeshError::ConnectionError(format!("TCP connection to {} failed: {}", clean_addr, e)))?;
             use tokio::io::AsyncWriteExt;
             let hello = crate::transport::PseudoTlsBuilder::new(token, "cloudflare.com").build();
-            stream
-                .write_all(&hello)
-                .await
-                .map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
-            stream
-                .flush()
-                .await
-                .map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
-
-            let mut session =
-                crate::noise::client_noise_handshake(&mut stream, &server_key, timeout).await?;
-
+            stream.write_all(&hello).await.map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
+            stream.flush().await.map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
+            let mut session = crate::noise::client_noise_handshake(&mut stream, &server_key, timeout).await?;
             let registration = crate::protocol::Frame::new(
                 ROUTE_REGISTRATION_ID,
                 [0u8; 8],
                 bytes::Bytes::from(identity_public),
-            )
-            .map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
+            ).map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
             let packet = session.encrypt_frame(&registration)?;
-            stream
-                .write_all(&packet)
-                .await
-                .map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
-            stream
-                .flush()
-                .await
-                .map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
-
+            stream.write_all(&packet).await.map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
+            stream.flush().await.map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
             Ok::<_, EchoMeshError>((stream, session))
         });
 
@@ -173,8 +106,7 @@ impl EchoMeshClient {
             Ok((stream, session)) => {
                 self.ping_ms.store(38, Ordering::Relaxed);
                 *self.state.write().unwrap() = NetworkState::ConnectedRealityRelay;
-                self.listener
-                    .on_state_changed(NetworkState::ConnectedRealityRelay);
+                self.listener.on_state_changed(NetworkState::ConnectedRealityRelay);
                 self.start_relay_workers(stream, session);
                 Ok(())
             }
@@ -199,35 +131,16 @@ impl EchoMeshClient {
 
     pub fn add_contact(&self, peer_id_hex: String, name: String) -> Result<(), EchoMeshError> {
         let peer_id = crate::model::parse_peer_id(&peer_id_hex)?;
-        self.storage.save_contact(&Contact {
-            peer_id: peer_id.to_vec(),
-            name,
-            added_at: now_millis(),
-        })
+        self.storage.save_contact(&Contact { peer_id: peer_id.to_vec(), name, added_at: now_millis() })
     }
-
-    pub fn get_contacts(&self) -> Result<Vec<Contact>, EchoMeshError> {
-        self.storage.get_contacts()
-    }
-
-    pub fn get_conversations(&self) -> Result<Vec<ConversationSummary>, EchoMeshError> {
-        self.storage.get_conversations()
-    }
-
-    pub fn get_messages(
-        &self,
-        peer_id_hex: String,
-        limit: u32,
-    ) -> Result<Vec<MessageRecord>, EchoMeshError> {
+    pub fn get_contacts(&self) -> Result<Vec<Contact>, EchoMeshError> { self.storage.get_contacts() }
+    pub fn get_conversations(&self) -> Result<Vec<ConversationSummary>, EchoMeshError> { self.storage.get_conversations() }
+    pub fn get_messages(&self, peer_id_hex: String, limit: u32) -> Result<Vec<MessageRecord>, EchoMeshError> {
         let id = crate::model::parse_peer_id(&peer_id_hex)?;
         self.storage.get_messages(&id, limit as usize, 0)
     }
 
-    pub fn send_chat_message(
-        &self,
-        recipient_peer_id_hex: String,
-        text: String,
-    ) -> Result<MessageRecord, EchoMeshError> {
+    pub fn send_chat_message(&self, recipient_peer_id_hex: String, text: String) -> Result<MessageRecord, EchoMeshError> {
         let recipient = crate::model::parse_peer_id(&recipient_peer_id_hex)?;
         let mut msg = MessageRecord {
             id: format!("msg_{}_{}", now_millis(), rand::random::<u16>()),
@@ -239,19 +152,16 @@ impl EchoMeshClient {
             status: 0,
         };
         self.storage.save_message(&msg)?;
-
         match self.send_packet(recipient.to_vec(), text.into_bytes()) {
             Ok(()) => {
                 msg.status = 1;
                 self.storage.update_message_status(&msg.id, 1)?;
-                self.listener
-                    .on_message_status_updated(msg.id.clone(), DeliveryStatus::Sent);
+                self.listener.on_message_status_updated(msg.id.clone(), DeliveryStatus::Sent);
             }
             Err(e) => {
                 msg.status = 2;
                 self.storage.update_message_status(&msg.id, 2)?;
-                self.listener
-                    .on_message_status_updated(msg.id.clone(), DeliveryStatus::Failed);
+                self.listener.on_message_status_updated(msg.id.clone(), DeliveryStatus::Failed);
                 return Err(e);
             }
         }
@@ -278,34 +188,23 @@ impl EchoMeshClient {
 
     pub fn shutdown(&self) -> Result<(), EchoMeshError> {
         let _ = self.disconnect();
-        if let Some(tx) = self.shutdown_sender.lock().unwrap().take() {
-            let _ = tx.send(());
-        }
+        if let Some(tx) = self.shutdown_sender.lock().unwrap().take() { let _ = tx.send(()); }
         Ok(())
     }
 }
 
 impl EchoMeshClient {
-    fn start_relay_workers(
-        &self,
-        tcp_stream: tokio::net::TcpStream,
-        session: crate::noise::NoiseSession,
-    ) {
+    fn start_relay_workers(&self, tcp_stream: tokio::net::TcpStream, session: crate::noise::NoiseSession) {
         let (mut read_half, mut write_half) = tcp_stream.into_split();
-        let (outbound_tx, mut outbound_rx) =
-            tokio::sync::mpsc::channel::<OutboundPacket>(256);
+        let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel::<OutboundPacket>(256);
         *self.outbound_tx.write().unwrap() = Some(outbound_tx.clone());
         let session = Arc::new(tokio::sync::Mutex::new(session));
-        self.session_mgr
-            .set_transport(session.clone(), outbound_tx);
+        self.session_mgr.set_transport(session.clone(), outbound_tx);
 
-        let mut shutdown_out = self
-            .shutdown_sender
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|tx| tx.subscribe());
+        let mut shutdown_out = self.shutdown_sender.lock().unwrap().as_ref().map(|tx| tx.subscribe());
         let session_out = session.clone();
+        let sender_private = self.identity.private_key.clone();
+        let sender_public = self.identity.public_key.clone();
         self.runtime.spawn(async move {
             use tokio::io::AsyncWriteExt;
             loop {
@@ -314,7 +213,7 @@ impl EchoMeshClient {
                         let Some(pkt) = msg else { break };
                         let mut route = [0u8; 16];
                         if pkt.recipient == crate::protocol::ECHO_SERVICE_PEER_ID {
-                            route.copy_from_slice(&crate::protocol::ECHO_SERVICE_PEER_ID[..16]);
+                            route.copy_from_slice(&ECHO_ROUTE_ID);
                         } else {
                             if pkt.recipient.len() != 32 {
                                 tracing::warn!("refusing packet with non-32-byte peer key");
@@ -322,49 +221,33 @@ impl EchoMeshClient {
                             }
                             route.copy_from_slice(&pkt.recipient[..16]);
                         }
-
                         let payload = if pkt.recipient == crate::protocol::ECHO_SERVICE_PEER_ID {
                             pkt.data
                         } else {
-                            match crate::e2ee::encrypt_for_peer(&pkt.recipient, &pkt.data) {
+                            match crate::e2ee::encrypt_authenticated(&sender_private, &sender_public, &pkt.recipient, &pkt.data) {
                                 Ok(v) => v,
                                 Err(e) => {
-                                    tracing::warn!("E2EE encrypt failed: {}", e);
+                                    tracing::warn!("authenticated E2EE encrypt failed: {}", e);
                                     continue;
                                 }
                             }
                         };
-
                         let mut nonce = [0u8; 8];
                         rand::thread_rng().fill_bytes(&mut nonce);
-                        let frame = match crate::protocol::Frame::new(
-                            route,
-                            nonce,
-                            bytes::Bytes::from(payload),
-                        ) {
+                        let frame = match crate::protocol::Frame::new(route, nonce, bytes::Bytes::from(payload)) {
                             Ok(f) => f,
                             Err(e) => {
                                 tracing::warn!("frame construction failed: {}", e);
                                 continue;
                             }
                         };
-                        let packet = {
-                            let mut s = session_out.lock().await;
-                            s.encrypt_frame(&frame)
-                        };
+                        let packet = { let mut s = session_out.lock().await; s.encrypt_frame(&frame) };
                         let Ok(packet) = packet else { break };
-                        if write_half.write_all(&packet).await.is_err()
-                            || write_half.flush().await.is_err()
-                        {
-                            break;
-                        }
+                        if write_half.write_all(&packet).await.is_err() || write_half.flush().await.is_err() { break; }
                     }
                     _ = async {
-                        if let Some(rx) = shutdown_out.as_mut() {
-                            let _ = rx.recv().await;
-                        } else {
-                            std::future::pending::<()>().await
-                        }
+                        if let Some(rx) = shutdown_out.as_mut() { let _ = rx.recv().await; }
+                        else { std::future::pending::<()>().await }
                     } => break,
                 }
             }
@@ -373,16 +256,12 @@ impl EchoMeshClient {
         let listener = self.listener.clone();
         let storage = self.storage.clone();
         let local_private = self.identity.private_key.clone();
+        let local_public = self.identity.public_key.clone();
         let state = self.state.clone();
         let outbound_ref = self.outbound_tx.clone();
         let session_mgr = self.session_mgr.clone();
         let session_in = session.clone();
-        let mut shutdown_in = self
-            .shutdown_sender
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|tx| tx.subscribe());
+        let mut shutdown_in = self.shutdown_sender.lock().unwrap().as_ref().map(|tx| tx.subscribe());
         self.runtime.spawn(async move {
             loop {
                 tokio::select! {
@@ -390,30 +269,27 @@ impl EchoMeshClient {
                         let frame = match result {
                             Ok(Some(f)) => f,
                             Ok(None) => break,
-                            Err(e) => {
-                                tracing::warn!("inbound frame failed: {}", e);
-                                break;
-                            }
+                            Err(e) => { tracing::warn!("inbound frame failed: {}", e); break; }
                         };
                         let is_echo = frame.session_id == ECHO_ROUTE_ID;
-                        let plaintext = if is_echo {
-                            frame.payload.to_vec()
+                        let (sender, plaintext) = if is_echo {
+                            (crate::protocol::ECHO_SERVICE_PEER_ID.to_vec(), frame.payload.to_vec())
                         } else {
-                            match crate::e2ee::decrypt_from_peer(&local_private, &frame.payload) {
-                                Ok(v) => v,
+                            match crate::e2ee::decrypt_authenticated(&local_private, &local_public, &frame.payload) {
+                                Ok((sender, plain)) => {
+                                    if sender[..16] != frame.session_id[..] {
+                                        tracing::warn!("dropping E2EE payload: authenticated sender does not match relay route");
+                                        continue;
+                                    }
+                                    (sender, plain)
+                                }
                                 Err(e) => {
                                     tracing::warn!("dropping unauthenticated E2EE payload: {}", e);
                                     continue;
                                 }
                             }
                         };
-                        let sender = if is_echo {
-                            crate::protocol::ECHO_SERVICE_PEER_ID.to_vec()
-                        } else {
-                            resolve_sender(&storage, &frame.session_id)
-                        };
-                        let text = String::from_utf8(plaintext.clone())
-                            .unwrap_or_else(|_| hex::encode(&plaintext));
+                        let text = String::from_utf8(plaintext.clone()).unwrap_or_else(|_| hex::encode(&plaintext));
                         let record = MessageRecord {
                             id: format!("msg_{}_{}", now_millis(), rand::random::<u16>()),
                             conversation_peer_id: sender.clone(),
@@ -428,11 +304,8 @@ impl EchoMeshClient {
                         listener.on_packet_received(sender, plaintext);
                     }
                     _ = async {
-                        if let Some(rx) = shutdown_in.as_mut() {
-                            let _ = rx.recv().await;
-                        } else {
-                            std::future::pending::<()>().await
-                        }
+                        if let Some(rx) = shutdown_in.as_mut() { let _ = rx.recv().await; }
+                        else { std::future::pending::<()>().await }
                     } => break,
                 }
             }
@@ -455,35 +328,14 @@ async fn read_encrypted_frame<R: tokio::io::AsyncRead + Unpin>(
         Err(e) => return Err(EchoMeshError::ConnectionError(e.to_string())),
     };
     if len == 0 || len > crate::noise::ENCRYPTED_FRAME_SIZE {
-        return Err(EchoMeshError::ConnectionError(
-            "invalid encrypted frame length".into(),
-        ));
+        return Err(EchoMeshError::ConnectionError("invalid encrypted frame length".into()));
     }
     let mut buf = vec![0u8; len];
-    reader
-        .read_exact(&mut buf)
-        .await
-        .map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
+    reader.read_exact(&mut buf).await.map_err(|e| EchoMeshError::ConnectionError(e.to_string()))?;
     let mut s = session.lock().await;
     s.decrypt_frame(&buf).map(Some)
 }
 
-fn resolve_sender(storage: &StorageManager, route: &[u8; 16]) -> Vec<u8> {
-    if let Ok(contacts) = storage.get_contacts() {
-        for contact in contacts {
-            if contact.peer_id.len() == 32 && contact.peer_id[..16] == route[..] {
-                return contact.peer_id;
-            }
-        }
-    }
-    let mut fallback = vec![0u8; 32];
-    fallback[..16].copy_from_slice(route);
-    fallback
-}
-
 fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
