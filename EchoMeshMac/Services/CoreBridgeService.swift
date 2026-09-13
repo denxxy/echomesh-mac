@@ -129,7 +129,6 @@ public actor CoreBridgeService {
 
     private let systemLogger = os.Logger(subsystem: "com.echomesh.mac", category: "CoreBridge")
 
-    // Reconnection and endpoint state
     private var activeEndpoint: RelayEndpoint?
     private var isManualDisconnect: Bool = false
     private var connectionTask: Task<Void, Never>?
@@ -170,7 +169,6 @@ public actor CoreBridgeService {
         self.lastErrorMessage = "\(context): operation failed"
     }
 
-    /// Initializes the Rust client with persistent storage in Application Support/EchoMesh.
     public func start() throws {
         guard clientInstance == nil else { return }
         do {
@@ -181,7 +179,6 @@ public actor CoreBridgeService {
         }
     }
 
-    /// Connects to a relay given its address string and raw 32-byte public key.
     public func connect(relayAddress: String, relayPublicKey: [UInt8], secretTokenHex: String? = nil) throws {
         if clientInstance == nil {
             try start()
@@ -207,7 +204,6 @@ public actor CoreBridgeService {
         }
     }
 
-    /// Connects to a remote relay endpoint, decoding and validating configuration.
     public func connectToRelay(endpoint: RelayEndpoint) async throws {
         do {
             try endpoint.validateHost()
@@ -295,7 +291,6 @@ public actor CoreBridgeService {
         }
     }
 
-    /// Connects to a remote Reality Relay or local Mesh peer via raw URL and Data.
     public func connect(relayUrl: String, relayKey: Data, secretTokenHex: String? = nil) throws {
         if clientInstance == nil {
             try start()
@@ -331,6 +326,8 @@ public actor CoreBridgeService {
             return .handshakeUnexpectedEof(msg)
         case .NoiseError(let msg):
             return .noiseError(msg)
+        case .CryptoError(let msg):
+            return .connectionFailed("Cryptographic error: \(msg)")
         case .ConnectionError(let msg):
             return .connectionFailed(msg)
         case .RuntimeError(let msg):
@@ -344,7 +341,7 @@ public actor CoreBridgeService {
 
     public var connectionState: ConnectionUIState {
         switch currentConnectionState {
-        case .connectedRealityRelay, .connectedBleMeshFallback:
+        case .connectedRealityRelay, .connectedLan, .connectedBleMeshFallback:
             return .connected
         case .connecting:
             return .connecting
@@ -525,13 +522,14 @@ public actor CoreBridgeService {
             case .offline: desc = "Network state: Offline"
             case .connecting: desc = "Network state: Connecting / Handshake in progress"
             case .connectedRealityRelay: desc = "Network state: Connected to Reality Relay"
+            case .connectedLan: desc = "Network state: Connected via LAN"
             case .connectedBleMeshFallback: desc = "Network state: Connected via BLE Mesh Fallback"
             }
             NetworkLogService.shared.log(desc, level: state == .offline ? .warning : .info)
         }
 
         switch state {
-        case .connectedRealityRelay, .connectedBleMeshFallback:
+        case .connectedRealityRelay, .connectedLan, .connectedBleMeshFallback:
             reconnectAttempt = 0
             reconnectTask?.cancel()
             reconnectTask = nil
