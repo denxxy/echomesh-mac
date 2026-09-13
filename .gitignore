@@ -22,3 +22,7 @@ Cargo.lock.backup
 *.dSYM.zip
 *.dSYM
 EchoMeshMac.app/
+
+# Generated Rust/UniFFI artifacts: always rebuild from echomesh-core/build_framework.sh
+EchoMeshMac/Frameworks/EchoMeshCore.xcframework/
+EchoMeshMac/Bindings/EchoMeshCore.swift
