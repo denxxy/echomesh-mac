@@ -22,3 +22,15 @@ jobs:
           workspaces: echomesh-core
       - run: cargo check --all-targets
       - run: cargo test --all-targets
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: bash
+        run: |
+          needle="echomesh_secret_mesh""_token_2026"
+          if grep -R --line-number --exclude-dir=.git "$needle" .; then
+            echo 'compiled secret found'
+            exit 1
+          fi
