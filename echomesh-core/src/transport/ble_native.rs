@@ -29,16 +29,19 @@ impl NativeBleTransport {
         imp::start(local_peer_id).await
     }
 
-    pub async fn recv_envelope(&self) -> Option<Vec<u8>> {
+    /// Receives one complete canonical EMD1 packet. The BLE layer does not
+    /// decrypt or re-wrap it; the core owns all E2EE parsing and authentication.
+    pub async fn recv_packet(&self) -> Option<Vec<u8>> {
         self.inbound_rx.lock().await.recv().await
     }
 
-    pub async fn send_envelope(
+    /// Sends one complete canonical EMD1 packet to the selected peer.
+    pub async fn send_packet(
         &self,
         recipient_peer_id: [u8; 32],
-        envelope: &[u8],
+        packet: &[u8],
     ) -> Result<(), EchoMeshError> {
-        imp::send_envelope(recipient_peer_id, envelope).await
+        imp::send_packet(recipient_peer_id, packet).await
     }
 }
 
@@ -62,7 +65,7 @@ mod imp {
     use btleplug::platform::Manager;
 
     use crate::transport::ble::{fragment_packet, BleReassembler};
-    use crate::transport::direct::{decode_direct_packet, encode_direct_packet};
+    use crate::transport::direct::decode_direct_packet;
 
     pub async fn start(local_peer_id: [u8; 32]) -> Result<Arc<NativeBleTransport>, EchoMeshError> {
         let (event_tx, mut event_rx) = mpsc::channel::<PeripheralEvent>(256);
@@ -159,19 +162,18 @@ mod imp {
                             .entry(request.client.clone())
                             .or_insert_with(BleReassembler::new);
                         match reassembler.push(&value) {
-                            Ok(Some(packet)) => match decode_direct_packet(&packet) {
-                                Ok(envelope) => {
-                                    let _ = inbound_tx.try_send(envelope.to_vec());
+                            Ok(Some(packet)) => {
+                                if decode_direct_packet(&packet).is_ok() {
+                                    let _ = inbound_tx.try_send(packet);
                                     let _ = responder.send(WriteRequestResponse {
                                         response: RequestResponse::Success,
                                     });
-                                }
-                                Err(_) => {
+                                } else {
                                     let _ = responder.send(WriteRequestResponse {
                                         response: RequestResponse::UnlikelyError,
                                     });
                                 }
-                            },
+                            }
                             Ok(None) => {
                                 let _ = responder.send(WriteRequestResponse {
                                     response: RequestResponse::Success,
@@ -207,16 +209,12 @@ mod imp {
         }))
     }
 
-    pub async fn send_envelope(
+    pub async fn send_packet(
         recipient_peer_id: [u8; 32],
-        envelope: &[u8],
+        packet: &[u8],
     ) -> Result<(), EchoMeshError> {
-        let direct_packet = encode_direct_packet(envelope)?;
-        let fragments = fragment_packet(
-            &direct_packet,
-            BLE_APPLICATION_MTU,
-            rand::random::<u32>(),
-        )?;
+        decode_direct_packet(packet)?;
+        let fragments = fragment_packet(packet, BLE_APPLICATION_MTU, rand::random::<u32>())?;
 
         let manager = Manager::new()
             .await
@@ -321,9 +319,9 @@ mod imp {
         ))
     }
 
-    pub async fn send_envelope(
+    pub async fn send_packet(
         _recipient_peer_id: [u8; 32],
-        _envelope: &[u8],
+        _packet: &[u8],
     ) -> Result<(), EchoMeshError> {
         Err(EchoMeshError::ConnectionError(
             "native BLE transport is unavailable on this target/build".into(),
