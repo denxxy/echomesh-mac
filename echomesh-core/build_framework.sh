@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-CORE_FEATURES="native-ble-peripheral"
+CORE_FEATURES="native-ble"
 
 echo "=== 1. Building echomesh-core release binaries with native BLE ==="
 cargo build --release --features "$CORE_FEATURES"
