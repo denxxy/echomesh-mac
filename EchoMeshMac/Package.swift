@@ -29,8 +29,7 @@ let package = Package(
                 "Info.plist",
                 "Frameworks",
                 "build_app.sh",
-                "run.sh",
-                "EchoMeshMac.app"
+                "run.sh"
             ],
             sources: [
                 "App",
