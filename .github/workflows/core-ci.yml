@@ -41,7 +41,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Compile native BLE peripheral and central backends
-        run: cargo check --all-targets --features native-ble-peripheral
+        run: cargo check --all-targets --features native-ble
+      - name: Test native BLE-enabled core
+        run: cargo test --all-targets --features native-ble
 
   mac-app:
     name: macos-application-shell
