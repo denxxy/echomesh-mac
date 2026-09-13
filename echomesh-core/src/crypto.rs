@@ -41,23 +41,23 @@ pub fn derive_public_key_impl(private_key: Vec<u8>) -> Result<IdentityKeyPair, E
 
 pub fn load_or_generate_identity(path: &std::path::Path) -> Result<IdentityKeyPair, EchoMeshError> {
     if path.exists() {
-        let bytes = std::fs::read(path).map_err(|e| EchoMeshError::CryptoError(format!("identity read failed: {}", e)))?;
+        let bytes = std::fs::read(path).map_err(|e| EchoMeshError::StorageError(format!("identity read failed: {}", e)))?;
         return derive_public_key_impl(bytes);
     }
     let pair = generate_identity_keypair_impl()?;
-    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| EchoMeshError::CryptoError(e.to_string()))?; }
+    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| EchoMeshError::StorageError(e.to_string()))?; }
     #[cfg(unix)]
     {
         use std::fs::OpenOptions;
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let mut f = OpenOptions::new().create_new(true).write(true).mode(0o600).open(path)
-            .map_err(|e| EchoMeshError::CryptoError(format!("identity create failed: {}", e)))?;
-        f.write_all(&pair.private_key).map_err(|e| EchoMeshError::CryptoError(e.to_string()))?;
+            .map_err(|e| EchoMeshError::StorageError(format!("identity create failed: {}", e)))?;
+        f.write_all(&pair.private_key).map_err(|e| EchoMeshError::StorageError(e.to_string()))?;
     }
     #[cfg(not(unix))]
     {
-        std::fs::write(path, &pair.private_key).map_err(|e| EchoMeshError::CryptoError(e.to_string()))?;
+        std::fs::write(path, &pair.private_key).map_err(|e| EchoMeshError::StorageError(e.to_string()))?;
     }
     Ok(pair)
 }
