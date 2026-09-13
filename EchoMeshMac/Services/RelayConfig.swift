@@ -25,14 +25,10 @@ public struct RelayEndpoint: Codable, Identifiable, Hashable, Sendable {
     public var host: String
     public var port: UInt16
     public var publicKeyBase64: String
-    /// Runtime-only credential hydrated from Keychain by RelayConfigManager.
-    /// It is deliberately omitted from JSON encoding.
     public var secretTokenHex: String = ""
     public var isDefault: Bool
 
-    enum CodingKeys: String, CodingKey {
-        case id, name, host, port, publicKeyBase64, secretTokenHex, isDefault
-    }
+    enum CodingKeys: String, CodingKey { case id, name, host, port, publicKeyBase64, secretTokenHex, isDefault }
 
     public init(id: UUID = UUID(), name: String, host: String, port: UInt16 = 8443, publicKeyBase64: String = "", secretTokenHex: String = "", isDefault: Bool = false) {
         self.id = id
@@ -45,32 +41,30 @@ public struct RelayEndpoint: Codable, Identifiable, Hashable, Sendable {
     }
 
     public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
-        self.name = try container.decode(String.self, forKey: .name)
-        self.host = try container.decode(String.self, forKey: .host)
-        self.port = try container.decode(UInt16.self, forKey: .port)
-        self.publicKeyBase64 = try container.decodeIfPresent(String.self, forKey: .publicKeyBase64) ?? ""
-        // Read legacy plaintext credentials once so the manager can migrate them to Keychain.
-        self.secretTokenHex = try container.decodeIfPresent(String.self, forKey: .secretTokenHex) ?? ""
-        self.isDefault = try container.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decode(String.self, forKey: .name)
+        host = try c.decode(String.self, forKey: .host)
+        port = try c.decode(UInt16.self, forKey: .port)
+        publicKeyBase64 = try c.decodeIfPresent(String.self, forKey: .publicKeyBase64) ?? ""
+        secretTokenHex = try c.decodeIfPresent(String.self, forKey: .secretTokenHex) ?? ""
+        isDefault = try c.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(id, forKey: .id)
-        try container.encode(name, forKey: .name)
-        try container.encode(host, forKey: .host)
-        try container.encode(port, forKey: .port)
-        try container.encode(publicKeyBase64, forKey: .publicKeyBase64)
-        try container.encode(isDefault, forKey: .isDefault)
-        // secretTokenHex intentionally not encoded.
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(host, forKey: .host)
+        try c.encode(port, forKey: .port)
+        try c.encode(publicKeyBase64, forKey: .publicKeyBase64)
+        try c.encode(isDefault, forKey: .isDefault)
     }
 
     public var formattedAddress: String {
-        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedHost.contains(":") && !trimmedHost.hasPrefix("[") && !trimmedHost.hasSuffix("]") { return "[\(trimmedHost)]:\(port)" }
-        return "\(trimmedHost):\(port)"
+        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.contains(":") && !trimmed.hasPrefix("[") && !trimmed.hasSuffix("]") { return "[\(trimmed)]:\(port)" }
+        return "\(trimmed):\(port)"
     }
 
     public func decodePublicKey() throws -> [UInt8] {
@@ -87,8 +81,8 @@ public struct RelayEndpoint: Codable, Identifiable, Hashable, Sendable {
         var sin = sockaddr_in()
         if inet_pton(AF_INET, trimmed, &sin.sin_addr) == 1 { return }
         var sin6 = sockaddr_in6()
-        let strippedIpv6 = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        if inet_pton(AF_INET6, strippedIpv6, &sin6.sin6_addr) == 1 { return }
+        let ipv6 = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if inet_pton(AF_INET6, ipv6, &sin6.sin6_addr) == 1 { return }
         let hostRegex = #"^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$|^localhost$"#
         if trimmed.range(of: hostRegex, options: .regularExpression) != nil { return }
         let singleLabelRegex = #"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$"#
@@ -97,7 +91,6 @@ public struct RelayEndpoint: Codable, Identifiable, Hashable, Sendable {
     }
 
     public func validatePort() throws { guard port >= 1 else { throw RelayConfigError.invalidPort(port) } }
-
     public func validate(requirePublicKey: Bool = false) throws {
         try validateHost()
         try validatePort()
@@ -124,11 +117,10 @@ public final class RelayConfigManager: Sendable {
     )
 
     public init(storageURL: URL? = nil) {
-        if let customURL = storageURL { self.storageURL = customURL }
+        if let storageURL { self.storageURL = storageURL }
         else {
             let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
-            let echoMeshDir = appSupport.appendingPathComponent("EchoMesh", isDirectory: true)
-            self.storageURL = echoMeshDir.appendingPathComponent("relays.json")
+            self.storageURL = appSupport.appendingPathComponent("EchoMesh", isDirectory: true).appendingPathComponent("relays.json")
         }
         load()
     }
@@ -145,54 +137,48 @@ public final class RelayConfigManager: Sendable {
 
     private static func persistCredential(_ token: String, for id: UUID) {
         let store = credentialStore(for: id)
-        if token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            try? store.deletePrivateKey()
-        } else {
-            try? store.savePrivateKey(Data(token.utf8))
-        }
+        if token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { try? store.deletePrivateKey() }
+        else { try? store.savePrivateKey(Data(token.utf8)) }
     }
 
     private static func loadCredential(for id: UUID) -> String {
-        guard let data = try? credentialStore(for: id).loadPrivateKey(), let data else { return "" }
+        guard let data = try? credentialStore(for: id).loadPrivateKey() else { return "" }
         return String(data: data, encoding: .utf8) ?? ""
     }
 
     public func load() {
-        let parentDir = storageURL.deletingLastPathComponent()
-        if !FileManager.default.fileExists(atPath: parentDir.path) { try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true) }
-
+        let parent = storageURL.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: parent.path) { try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true) }
         guard FileManager.default.fileExists(atPath: storageURL.path),
               let data = try? Data(contentsOf: storageURL),
               let decoded = try? JSONDecoder().decode([RelayEndpoint].self, from: data),
               !decoded.isEmpty else {
-            self.endpoints = [Self.defaultEndpoint]
-            self.activeEndpointId = Self.defaultEndpoint.id
+            endpoints = [Self.defaultEndpoint]
+            activeEndpointId = Self.defaultEndpoint.id
             save()
             return
         }
 
-        self.endpoints = decoded
-        var migratedLegacyCredential = false
-        for i in self.endpoints.indices {
-            if self.endpoints[i].host == Self.defaultEndpoint.host,
-               self.endpoints[i].publicKeyBase64.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                self.endpoints[i].publicKeyBase64 = Self.defaultEndpoint.publicKeyBase64
+        endpoints = decoded
+        var migrated = false
+        for i in endpoints.indices {
+            if endpoints[i].host == Self.defaultEndpoint.host && endpoints[i].publicKeyBase64.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                endpoints[i].publicKeyBase64 = Self.defaultEndpoint.publicKeyBase64
             }
-            let legacyToken = self.endpoints[i].secretTokenHex
-            if !legacyToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Self.persistCredential(legacyToken, for: self.endpoints[i].id)
-                migratedLegacyCredential = true
+            let legacy = endpoints[i].secretTokenHex
+            if !legacy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Self.persistCredential(legacy, for: endpoints[i].id)
+                migrated = true
             }
-            self.endpoints[i].secretTokenHex = Self.loadCredential(for: self.endpoints[i].id)
+            endpoints[i].secretTokenHex = Self.loadCredential(for: endpoints[i].id)
         }
-        if migratedLegacyCredential { save() }
-        if let defaultNode = self.endpoints.first(where: { $0.isDefault }) { self.activeEndpointId = defaultNode.id }
-        else { self.activeEndpointId = self.endpoints.first?.id }
+        if migrated { save() }
+        activeEndpointId = endpoints.first(where: { $0.isDefault })?.id ?? endpoints.first?.id
     }
 
     public func save() {
-        let parentDir = storageURL.deletingLastPathComponent()
-        if !FileManager.default.fileExists(atPath: parentDir.path) { try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true) }
+        let parent = storageURL.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: parent.path) { try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true) }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(endpoints) else { return }
@@ -200,12 +186,12 @@ public final class RelayConfigManager: Sendable {
     }
 
     public func add(endpoint: RelayEndpoint) {
-        var newEndpoint = endpoint
-        if endpoints.isEmpty { newEndpoint.isDefault = true }
-        if newEndpoint.isDefault { for i in endpoints.indices { endpoints[i].isDefault = false } }
-        Self.persistCredential(newEndpoint.secretTokenHex, for: newEndpoint.id)
-        endpoints.append(newEndpoint)
-        if newEndpoint.isDefault || activeEndpointId == nil { activeEndpointId = newEndpoint.id }
+        var endpoint = endpoint
+        if endpoints.isEmpty { endpoint.isDefault = true }
+        if endpoint.isDefault { for i in endpoints.indices { endpoints[i].isDefault = false } }
+        Self.persistCredential(endpoint.secretTokenHex, for: endpoint.id)
+        endpoints.append(endpoint)
+        if endpoint.isDefault || activeEndpointId == nil { activeEndpointId = endpoint.id }
         save()
     }
 
@@ -225,8 +211,7 @@ public final class RelayConfigManager: Sendable {
         save()
     }
 
-    public func setActive(id: UUID) { if endpoints.contains(where: { $0.id == id }) { self.activeEndpointId = id } }
-
+    public func setActive(id: UUID) { if endpoints.contains(where: { $0.id == id }) { activeEndpointId = id } }
     public func setDefault(id: UUID) {
         for i in endpoints.indices { endpoints[i].isDefault = (endpoints[i].id == id) }
         setActive(id: id)
