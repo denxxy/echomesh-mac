@@ -26,10 +26,8 @@ pub enum EchoMeshError {
     HandshakeTimeout(String),
     #[error("Unexpected EOF during handshake with relay: {0}")]
     HandshakeUnexpectedEof(String),
-    #[error("Noise cryptographic error during handshake: {0}")]
+    #[error("Noise cryptographic error: {0}")]
     NoiseError(String),
-    #[error("Cryptographic error: {0}")]
-    CryptoError(String),
     #[error("Relay connection error: {0}")]
     ConnectionError(String),
     #[error("Tokio runtime error: {0}")]
@@ -41,12 +39,7 @@ pub enum EchoMeshError {
 }
 
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NetworkState {
-    Offline,
-    Connecting,
-    ConnectedRealityRelay,
-    ConnectedBleMeshFallback,
-}
+pub enum NetworkState { Offline, Connecting, ConnectedRealityRelay, ConnectedBleMeshFallback }
 
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeliveryStatus { Sent, Relayed, Delivered, Failed }
@@ -70,11 +63,7 @@ pub trait CoreEventsListener: Send + Sync {
 }
 
 #[uniffi::export]
-pub fn generate_identity_keypair() -> Result<IdentityKeyPair, EchoMeshError> {
-    crypto::generate_identity_keypair_impl()
-}
+pub fn generate_identity_keypair() -> Result<IdentityKeyPair, EchoMeshError> { crypto::generate_identity_keypair_impl() }
 
 #[uniffi::export]
-pub fn derive_public_key(private_key: Vec<u8>) -> Result<IdentityKeyPair, EchoMeshError> {
-    crypto::derive_public_key_impl(private_key)
-}
+pub fn derive_public_key(private_key: Vec<u8>) -> Result<IdentityKeyPair, EchoMeshError> { crypto::derive_public_key_impl(private_key) }
